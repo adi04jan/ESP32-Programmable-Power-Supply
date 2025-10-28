@@ -432,6 +432,37 @@ const char index_html[] PROGMEM = R"rawliteral(
         function closeAbout() {
             document.getElementById('aboutModal').classList.remove('show');
         }
+        function refreshStates() {
+            fetch('/status')
+                .then(resp => resp.json())
+                .then(data => {
+                    // Outputs ON/OFF
+                    ['1', '2', '3'].forEach(ch => {
+                        let btn = document.getElementById('btn' + ch);
+                        let status = document.getElementById('status' + ch);
+                        let stateKey = 'output' + ch;
+                        if (data[stateKey]) {
+                            btn.classList.remove('off');
+                            btn.classList.add('on');
+                            btn.textContent = 'Turn Off';
+                            status.classList.add('on');
+                            state[stateKey] = true;
+                        } else {
+                            btn.classList.remove('on');
+                            btn.classList.add('off');
+                            btn.textContent = 'Turn On';
+                            status.classList.remove('on');
+                            state[stateKey] = false;
+                        }
+                    });
+                    // Voltages
+                    document.getElementById('display1').textContent = data.voltage1.toFixed(2) + 'V';
+                    document.getElementById('display2').textContent = data.voltage2.toFixed(2) + 'V';
+                    document.getElementById('display3').textContent = data.voltage3.toFixed(2) + 'V';
+                });
+        }
+        setInterval(refreshStates, 2000);
+        window.onload = refreshStates;
     </script>
 </body>
 </html>

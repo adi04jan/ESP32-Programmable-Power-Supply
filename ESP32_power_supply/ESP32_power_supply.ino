@@ -48,6 +48,7 @@ struct State {
   float voltage1 = 2.5;  // initial (slider default)
 } psState;
 
+float control_voltage = 0;
 static const char *server_certificate = "-----BEGIN CERTIFICATE-----\n"
                                         "MIIEkjCCA3qgAwIBAgIQCgFBQgAAAVOFc2oLheynCDANBgkqhkiG9w0BAQsFADA/\n"
                                         "MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT\n"
@@ -295,7 +296,7 @@ int read_5V_volt() {
   const int sample_c = 5;
   static uint32_t samples[sample_c] = { 0 };
   static bool initialized = false;
-  uint32_t VV_voltage = (read_any_volt(VOLTAGE_READ_PIN_5V, samples, &initialized, sample_c) * 11);
+  uint32_t VV_voltage = (read_any_volt(VOLTAGE_READ_PIN_5V, samples, &initialized, sample_c) * 2);
   return VV_voltage;
 }
 
@@ -303,7 +304,7 @@ int read_3V3_volt() {
   const int sample_c = 5;
   static uint32_t samples[sample_c] = { 0 };
   static bool initialized = false;
-  uint32_t VV_voltage = (read_any_volt(VOLTAGE_READ_PIN_3V3, samples, &initialized, sample_c) * 11);
+  uint32_t VV_voltage = (read_any_volt(VOLTAGE_READ_PIN_3V3, samples, &initialized, sample_c) * 2);
   return VV_voltage;
 }
 
@@ -381,8 +382,6 @@ void setOutput(uint8_t output, bool state) {
 void setVoltage(float voltage) {
   uint32_t set_mv = (uint32_t)(voltage * 1000);
   set_voltage(set_mv);
-  uint32_t measured = read_VV_volt();
-  voltage = (float)(measured / 1000);
   psState.voltage1 = voltage;
 }
 
@@ -423,7 +422,6 @@ void setup() {
   }
   Serial.println("WiFi Connected : " + get_connected_wifi_info());
   Serial.println(WiFi.localIP());
-  // perform_ota_tasked(); 
   perform_ota();
   if (MDNS.begin("ESP32PS")) {
     Serial.println("MDNS responder started: http://ESP32PS.local/");
@@ -437,16 +435,29 @@ void setup() {
   server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request) {
     String action, sval;
     int output = 0;
-    float value = 0;
     if (request->hasParam("action", true))
       action = request->getParam("action", true)->value();
     if (request->hasParam("output", true))
       output = request->getParam("output", true)->value().toInt();
     if (request->hasParam("value", true))
-      value = request->getParam("value", true)->value().toFloat();
-    if (action == "toggle") setOutput(output, value == 1);
-    if (action == "set_voltage" && output == 1) setVoltage(value);
+      control_voltage = request->getParam("value", true)->value().toFloat();
+    if (action == "toggle") setOutput(output, control_voltage == 1);
+    if (action == "set_voltage" && output == 1) setVoltage(control_voltage);
     request->send(200, "text/plain", "OK");
+  });
+
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Prepare JSON payload with live output states and voltages
+    // For voltages: use latest readings; for outputs: use psState
+    String json = "{";
+    json += "\"output1\":" + String(psState.output1 ? "true" : "false") + ",";
+    json += "\"output2\":" + String(psState.output2 ? "true" : "false") + ",";
+    json += "\"output3\":" + String(psState.output3 ? "true" : "false") + ",";
+    json += "\"voltage1\":" + String(psState.voltage1, 2) + ",";
+    json += "\"voltage2\":" + String(read_5V_volt() / 1000.0, 2) + ",";
+    json += "\"voltage3\":" + String(read_3V3_volt() / 1000.0, 2);
+    json += "}";
+    request->send(200, "application/json", json);
   });
 
   server.begin();
@@ -455,7 +466,7 @@ void setup() {
 }
 
 // the loop function runs over and over again forever
-void loop() {ṭ
+void loop() {
   uint32_t currtime = millis();
   static uint32_t lasttime = 0;
 
