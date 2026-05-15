@@ -342,10 +342,9 @@ void fine_tune_volt(uint32_t target_mV) {
 }
 
 void set_voltage(uint32_t target_mV) {
-  int step_jump = 0;
-  uint64_t resistance_val = 0;
   //Power_OFF(ENABLE_VV_PIN);
-  resistance_val = (DC_R2_REF * DC_V_REF) / (target_mV - DC_V_REF) - MCPWIPEROHMS;
+  long resistance_calc = (long)((DC_R2_REF * DC_V_REF) / (target_mV - DC_V_REF)) - MCPWIPEROHMS;
+  uint64_t resistance_val = (resistance_calc > 0) ? (uint64_t)resistance_calc : 0;
   i2cDP.setResistance(resistance_val);
   delay(100);
   uint32_t measured = read_VV_volt();
