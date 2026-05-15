@@ -537,18 +537,7 @@ void vb_register_routes() {
       });
   server.addHandler(settingsHandler);
 
-  // PID info / tune / reset
-  server.on("/api/pid", HTTP_GET, [](AsyncWebServerRequest *req) {
-    VB_REQUIRE_AUTH(req);
-    JsonDocument d;
-    d["kp"]    = g_pid_kp; d["ki"] = g_pid_ki; d["kd"] = g_pid_kd;
-    d["tuned"] = vb.pid_tuned;
-    static const char* const SS[] = {"idle","settling","running","converged","tuning"};
-    d["state"] = SS[min((uint8_t)4, (uint8_t)g_vctrl_state)];
-    String out; serializeJson(d, out);
-    req->send(200, "application/json", out);
-  });
-
+  // PID tune / reset
   server.on("/api/pid/tune", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
     if (g_vctrl_state == 4) {

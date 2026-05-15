@@ -193,10 +193,9 @@ void voltageControlTask(void* pvParameters) {
         float new_r  = constrain(r2 - v_corr * r2 * r2 / ((float)DC_V_REF * (float)DC_R2_REF),
                                  0.0f, (float)DC_R2_REF);
         i2cDP.setResistance((uint32_t)new_r);
-        Serial.printf("[PID] err=%.0f r=%.0f meas=%u\n", error, new_r, (uint32_t)g_measured_mV);
 
         if (fabsf(error) < 100.0f) {
-          if (++conv_count >= 3) { state = 3; g_vctrl_state = 3; Serial.println("[PID] converged"); }
+          if (++conv_count >= 3) { state = 3; g_vctrl_state = 3; }
         } else { conv_count = 0; }
       } else {
         state = 3; g_vctrl_state = 3;  // below Vref — formula can't drive here
@@ -252,19 +251,17 @@ bool pid_autotune(uint32_t target) {
   const float STEP = 79.0f;
   float relay_r = constrain(150.0f * rc * rc / ((float)DC_V_REF * (float)DC_R2_REF),
                             STEP * 2, STEP * 8);
-  Serial.printf("[AutoTune] target=%umV Rc=%.0f relayR=%.0f\n", target, rc, relay_r);
-
   // Formula set + settle
   i2cDP.setResistance((uint32_t)rc);
   vTaskDelay(pdMS_TO_TICKS(800));
 
   const int MAX_CROSS = 8;
   uint32_t  cross_t[MAX_CROSS];
-  int       n_cross    = 0;
-  bool      relay_up   = true;   // true = lower R = higher V
-  uint32_t  meas_max   = 0, meas_min = 0xFFFFFFFFu;
-  bool      tracking   = false;
-  uint32_t  t_start    = millis();
+  int       n_cross = 0;
+  bool      relay_up = true;
+  uint32_t  meas_max = 0, meas_min = 0xFFFFFFFFu;
+  bool      tracking = false;
+  uint32_t  t_start  = millis();
 
   i2cDP.setResistance((uint32_t)constrain(rc - relay_r, 0.0f, (float)DC_R2_REF));
 
@@ -277,58 +274,43 @@ bool pid_autotune(uint32_t target) {
     }
     uint32_t meas = (sum / 4) * 48;
     g_measured_mV = meas;
-
     if (tracking) {
       if (meas > meas_max) meas_max = meas;
       if (meas < meas_min) meas_min = meas;
     }
-
     if (relay_up && meas >= target) {
       relay_up = false;
       i2cDP.setResistance((uint32_t)constrain(rc + relay_r, 0.0f, (float)DC_R2_REF));
-      cross_t[n_cross++] = millis();
-      tracking = true;
-      Serial.printf("[AutoTune] ^ cross meas=%u\n", meas);
+      cross_t[n_cross++] = millis(); tracking = true;
     } else if (!relay_up && meas < target) {
       relay_up = true;
       i2cDP.setResistance((uint32_t)constrain(rc - relay_r, 0.0f, (float)DC_R2_REF));
       cross_t[n_cross++] = millis();
-      Serial.printf("[AutoTune] v cross meas=%u\n", meas);
     }
   }
 
   i2cDP.setResistance((uint32_t)rc);
+  if (n_cross < 4 || meas_max <= meas_min) return false;
 
-  if (n_cross < 4 || meas_max <= meas_min) {
-    Serial.println("[AutoTune] FAIL: too few oscillations");
-    return false;
-  }
-
-  // Average period over full cycles (pair of crossings = one period)
   float Tu_sum = 0; int Tu_n = 0;
   for (int i = 2; i < n_cross; i += 2) { Tu_sum += cross_t[i] - cross_t[i-2]; Tu_n++; }
   if (Tu_n == 0) return false;
-  float Tu = Tu_sum / Tu_n / 1000.0f;              // seconds
-  float Au = (meas_max - meas_min) / 2.0f;          // mV half-amplitude
+  float Tu = Tu_sum / Tu_n / 1000.0f;
+  float Au = (meas_max - meas_min) / 2.0f;
+  if (Tu < 0.2f || Au < 30.0f) return false;
 
-  if (Tu < 0.2f || Au < 30.0f) {
-    Serial.printf("[AutoTune] FAIL: Tu=%.3fs Au=%.1fmV\n", Tu, Au);
-    return false;
-  }
-
-  // Relay voltage amplitude at operating point
   float d_v = relay_r * (float)DC_V_REF * (float)DC_R2_REF / (rc * rc);
   float Ku  = 4.0f * d_v / (3.14159265f * Au);
 
-  // Ziegler-Nichols PID
-  g_pid_kp = 0.6f   * Ku;
-  g_pid_ki = 1.2f   * Ku / Tu;
+  g_pid_kp = 0.6f * Ku;
+  g_pid_ki = 1.2f * Ku / Tu;
   g_pid_kd = 0.075f * Ku * Tu;
   vb.pid_kp = g_pid_kp; vb.pid_ki = g_pid_ki; vb.pid_kd = g_pid_kd;
   vb.pid_tuned = true;
   vb_save();
-  Serial.printf("[AutoTune] OK Tu=%.3fs Au=%.1fmV Ku=%.4f → Kp=%.4f Ki=%.4f Kd=%.4f\n",
-    Tu, Au, Ku, g_pid_kp, g_pid_ki, g_pid_kd);
+  // Print gains as integers (×1000) to avoid pulling in float-printf
+  Serial.printf("[AutoTune] Kp=%d Ki=%d Kd=%d (x1000)\n",
+    (int)(g_pid_kp*1000), (int)(g_pid_ki*1000), (int)(g_pid_kd*1000));
   return true;
 }
 
