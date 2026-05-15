@@ -1,6 +1,5 @@
+static const char *base_url = "https://your-server.example.com/ota/";  // MUST be HTTPS for HttpsOTA
 
-static const char *url = "http://example.com/server/ota/firmware.bin";  //state url of your firmware image
-static const char *base_url = "http://example.com/server/ota/";
 static const char *ssids[] = {
     "wifi_ssid1",
     "wifi_ssid2"
