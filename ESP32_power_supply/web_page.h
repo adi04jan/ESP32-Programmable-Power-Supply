@@ -370,10 +370,12 @@ const char index_html[] PROGMEM = R"rawliteral(
         };
         const slider = document.getElementById('voltage1');
         const display = document.getElementById('display1');
+        let voltageTimer = null;
         slider.addEventListener('input', function() {
             state.voltage1 = parseFloat(this.value);
             display.textContent = state.voltage1.toFixed(1) + 'V';
-            sendCommand('set_voltage', 1, state.voltage1);
+            clearTimeout(voltageTimer);
+            voltageTimer = setTimeout(() => sendCommand('set_voltage', 1, state.voltage1), 300);
         });
         // Quick Set voltage buttons
         function setPresetVoltage(value) {

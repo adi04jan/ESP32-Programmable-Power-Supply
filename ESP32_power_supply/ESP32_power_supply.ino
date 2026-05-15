@@ -291,6 +291,17 @@ int read_VV_volt() {
   return VV_voltage;
 }
 
+// Fresh multi-sample read bypassing the rolling buffer — used by the control loop
+// to avoid buffer lag immediately after a resistance change.
+uint32_t read_vv_fresh() {
+  uint32_t sum = 0;
+  for (int i = 0; i < 5; i++) {
+    sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
+    if (i < 4) delay(10);
+  }
+  return (sum / 5) * 11;
+}
+
 int read_5V_volt() {
   const int sample_c = 5;
   static uint32_t samples[sample_c] = { 0 };
@@ -309,66 +320,60 @@ int read_3V3_volt() {
 
 void fine_tune_volt(uint32_t target_mV) {
   const int STEP_ADJ_MAX = 10;
-  int settling_delay = 30;
-  if (target_mV > 10000) settling_delay = 60;
-
   int curr_resistance = i2cDP.calcResistance();
-  uint32_t measured = read_VV_volt();
 
   for (int i = 0; i < STEP_ADJ_MAX; i++) {
-    long diff = (long)target_mV - (long)measured;
+    uint32_t measured = read_vv_fresh();
 
-    if (abs(diff) <= VOLTAGE_ERROR_MAX) {
-      // target reached
+    if (measured < 200) {
+      Serial.println("Fine-tune: no signal on ADC, aborting");
       return;
     }
 
+    long diff = (long)target_mV - (long)measured;
+    if (abs(diff) <= VOLTAGE_ERROR_MAX) return;
+
     if (diff > 0) {
-      // measured < target → need higher voltage → decrease resistance
-      curr_resistance = max(curr_resistance - 85, 0);
-      i2cDP.setResistance(max(curr_resistance - 250, 0));
-      delay(30);
-      i2cDP.setResistance(curr_resistance);
+      curr_resistance = max(curr_resistance - 100, 0);
     } else {
-      // measured > target → need lower voltage → increase resistance
-      curr_resistance = min(curr_resistance + 85, 10000);
-      i2cDP.setResistance(min(curr_resistance + 250, 10000));
-      delay(30);
-      i2cDP.setResistance(curr_resistance);
+      curr_resistance = min(curr_resistance + 100, 10000);
     }
 
-    delay(settling_delay);
-    measured = read_VV_volt();
-    Serial.println("Fine-tune #" + String(i + 1) + " | R=" + String(curr_resistance) + " Ω → " + String(measured) + " mV");
+    i2cDP.setResistance(curr_resistance);
+    delay(80);
+    Serial.println("Fine-tune #" + String(i + 1) + " R=" + String(curr_resistance) + " -> " + String(read_vv_fresh()) + "mV");
   }
-
-  Serial.println("⚠️ Fine-tuning finished, voltage may not be exact.");
 }
 
 void set_voltage(uint32_t target_mV) {
   if (target_mV <= DC_V_REF) {
-    Serial.println("set_voltage: target below reference voltage, ignoring");
+    Serial.println("set_voltage: target below reference, ignoring");
     return;
   }
-  //Power_OFF(ENABLE_VV_PIN);
+
   long resistance_calc = (long)((DC_R2_REF * DC_V_REF) / (target_mV - DC_V_REF)) - MCPWIPEROHMS;
   uint64_t resistance_val = (resistance_calc > 0) ? (uint64_t)resistance_calc : 0;
+
   i2cDP.setResistance(resistance_val);
-  delay(100);
-  uint32_t measured = read_VV_volt();
-  Serial.println("cali resistance is " + String(resistance_val) + " for mv " + String(target_mV) + " Real Volt " + String(measured) + "pot value " + String(i2cDP.calcResistance()));
+  delay(150);  // wait for LM2596 to settle after resistance change
+
+  uint32_t measured = read_vv_fresh();
+  Serial.println("Set R=" + String(resistance_val) + " target=" + String(target_mV) + "mV actual=" + String(measured) + "mV");
+
+  if (!psState.output1) {
+    Serial.println("Output off — skipping fine-tune");
+    return;
+  }
 
   for (int i = 0; i < 3; i++) {
-    measured = read_VV_volt();
+    measured = read_vv_fresh();
     long diff = (long)target_mV - (long)measured;
-    if (abs(diff) <= VOLTAGE_ERROR_MAX) {
-      break;  // already within tolerance
-    }
+    if (abs(diff) <= VOLTAGE_ERROR_MAX) break;
     fine_tune_volt(target_mV);
   }
-  //Power_ON(ENABLE_VV_PIN);
-  measured = read_VV_volt();
-  Serial.println("cal resistance is " + String(resistance_val) + " for mv " + String(target_mV) + " Real Volt " + String(measured) + "pot value " + String(i2cDP.calcResistance()));
+
+  measured = read_vv_fresh();
+  Serial.println("Final R=" + String(i2cDP.calcResistance()) + " actual=" + String(measured) + "mV");
 }
 
 void setOutput(uint8_t output, bool state) {
@@ -411,6 +416,12 @@ void setup() {
   Serial.flush();
   print_wakeup_reason();
   Wire.begin();
+  Wire.beginTransmission(MCP4017ADDRESS);
+  if (Wire.endTransmission() == 0) {
+    Serial.println("MCP4017 found at 0x2F");
+  } else {
+    Serial.println("WARNING: MCP4017 not found at 0x2F — check I2C wiring!");
+  }
   ret = connect_wifi();
   if (ret != 0) {
     Serial.println("Failed to connect to any wifi network");
