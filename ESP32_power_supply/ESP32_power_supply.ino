@@ -141,9 +141,9 @@ uint8_t connect_wifi() {
 }
 
 void no_network() {
-  static int ret = 0;
-  static int count = 0;
-  Serial.println("No WiFi network found, entering continous scan");
+  int ret = 0;
+  int count = 0;
+  Serial.println("No WiFi network found, entering continuous scan");
   while (count++ < 10) {
     ret = connect_wifi();
     if (ret == 0) {
