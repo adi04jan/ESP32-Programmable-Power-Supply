@@ -292,7 +292,7 @@ void vb_fill_status(JsonDocument &d) {
   d["set1"]     = g_setpoint_mV / 1000.0f;
   d["ts"]       = (uint64_t)millis();
   static const char* const STATE_STR[] = {"idle","settling","running","converged","tuning"};
-  d["pid_state"] = STATE_STR[min((uint8_t)4, g_vctrl_state)];
+  d["pid_state"] = STATE_STR[min((uint8_t)4, (uint8_t)g_vctrl_state)];
   d["pid_kp"]    = g_pid_kp;
   d["pid_ki"]    = g_pid_ki;
   d["pid_kd"]    = g_pid_kd;
@@ -544,7 +544,7 @@ void vb_register_routes() {
     d["kp"]    = g_pid_kp; d["ki"] = g_pid_ki; d["kd"] = g_pid_kd;
     d["tuned"] = vb.pid_tuned;
     static const char* const SS[] = {"idle","settling","running","converged","tuning"};
-    d["state"] = SS[min((uint8_t)4, g_vctrl_state)];
+    d["state"] = SS[min((uint8_t)4, (uint8_t)g_vctrl_state)];
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
   });
