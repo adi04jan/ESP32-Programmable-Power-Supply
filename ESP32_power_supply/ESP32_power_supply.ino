@@ -48,6 +48,11 @@ struct State {
   float voltage1 = 2.5;  // initial (slider default)
 } psState;
 
+volatile uint32_t g_target_mV    = 2500;
+volatile uint32_t g_setpoint_mV  = 2500;
+volatile uint32_t g_measured_mV  = 0;
+volatile bool     g_ctrl_output1 = false;
+
 static const char *server_certificate = "-----BEGIN CERTIFICATE-----\n"
                                         "MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n"
                                         "TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh\n"
@@ -291,17 +296,6 @@ int read_VV_volt() {
   return VV_voltage;
 }
 
-// Fresh multi-sample read bypassing the rolling buffer — used by the control loop
-// to avoid buffer lag immediately after a resistance change.
-uint32_t read_vv_fresh() {
-  uint32_t sum = 0;
-  for (int i = 0; i < 5; i++) {
-    sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-    if (i < 4) delay(10);
-  }
-  return (sum / 5) * 11;
-}
-
 int read_5V_volt() {
   const int sample_c = 5;
   static uint32_t samples[sample_c] = { 0 };
@@ -318,77 +312,84 @@ int read_3V3_volt() {
   return VV_voltage;
 }
 
-void fine_tune_volt(uint32_t target_mV) {
-  const int STEP_ADJ_MAX = 10;
-  int curr_resistance = i2cDP.calcResistance();
-
-  for (int i = 0; i < STEP_ADJ_MAX; i++) {
-    uint32_t measured = read_vv_fresh();
-
-    if (measured < 200) {
-      Serial.println("Fine-tune: no signal on ADC, aborting");
-      return;
-    }
-
-    long diff = (long)target_mV - (long)measured;
-    if (abs(diff) <= VOLTAGE_ERROR_MAX) return;
-
-    if (diff > 0) {
-      curr_resistance = max(curr_resistance - 100, 0);
-    } else {
-      curr_resistance = min(curr_resistance + 100, 10000);
-    }
-
-    i2cDP.setResistance(curr_resistance);
-    delay(80);
-    Serial.println("Fine-tune #" + String(i + 1) + " R=" + String(curr_resistance) + " -> " + String(read_vv_fresh()) + "mV");
-  }
-}
-
-void set_voltage(uint32_t target_mV) {
-  if (target_mV <= DC_V_REF) {
-    Serial.println("set_voltage: target below reference, ignoring");
-    return;
-  }
-
-  long resistance_calc = (long)((DC_R2_REF * DC_V_REF) / (target_mV - DC_V_REF)) - MCPWIPEROHMS;
-  uint64_t resistance_val = (resistance_calc > 0) ? (uint64_t)resistance_calc : 0;
-
-  i2cDP.setResistance(resistance_val);
-  delay(150);  // wait for LM2596 to settle after resistance change
-
-  uint32_t measured = read_vv_fresh();
-  Serial.println("Set R=" + String(resistance_val) + " target=" + String(target_mV) + "mV actual=" + String(measured) + "mV");
-
-  if (!psState.output1) {
-    Serial.println("Output off — skipping fine-tune");
-    return;
-  }
-
-  for (int i = 0; i < 3; i++) {
-    measured = read_vv_fresh();
-    long diff = (long)target_mV - (long)measured;
-    if (abs(diff) <= VOLTAGE_ERROR_MAX) break;
-    fine_tune_volt(target_mV);
-  }
-
-  measured = read_vv_fresh();
-  Serial.println("Final R=" + String(i2cDP.calcResistance()) + " actual=" + String(measured) + "mV");
-}
-
 void setOutput(uint8_t output, bool state) {
   uint8_t pin = (output == 1) ? ENABLE_VV_PIN : (output == 2) ? ENABLE_5V_PIN
                                                               : ENABLE_3V3_PIN;
   digitalWrite(pin, state ? HIGH : LOW);
-  if (output == 1) psState.output1 = state;
+  if (output == 1) { psState.output1 = state; g_ctrl_output1 = state; }
   if (output == 2) psState.output2 = state;
   if (output == 3) psState.output3 = state;
 }
 
-void setVoltage(float voltage) {
-  uint32_t set_mv = (uint32_t)(voltage * 1000);
-  set_voltage(set_mv);
-  psState.voltage1 = voltage;
+void voltageControlTask(void* pvParameters) {
+  const int      FINE_TUNE_R2_MIN   = 3000;  // below this ohms, each step > tolerance
+  const int      FINE_TUNE_MAX_ITER = 3;
+  const uint32_t VOLTAGE_TOL_MV    = 100;
+  const uint32_t MONITOR_MS        = 200;
+
+  uint32_t lastTarget = g_target_mV;
+
+  for (;;) {
+    uint32_t target = g_target_mV;
+
+    if (target != lastTarget) {
+      lastTarget = target;
+
+      // Formula-based initial resistance set
+      if (target > (uint32_t)DC_V_REF) {
+        long r_calc = (long)((DC_R2_REF * DC_V_REF) / (target - DC_V_REF)) - MCPWIPEROHMS;
+        uint32_t r_val = (r_calc > 0) ? (uint32_t)r_calc : 0;
+        i2cDP.setResistance(r_val);
+        Serial.printf("[VCtrl] target=%umV R=%u\n", target, r_val);
+      }
+      vTaskDelay(pdMS_TO_TICKS(150));
+
+      // Sample ADC 3x with gaps
+      uint32_t sum = 0;
+      for (int s = 0; s < 3; s++) {
+        sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
+        if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
+      }
+      g_measured_mV = (sum / 3) * 11;
+
+      // Fine-tune only in low-voltage range where pot resolution allows it
+      if (g_ctrl_output1) {
+        int r_now = (int)i2cDP.calcResistance();
+        for (int i = 0; i < FINE_TUNE_MAX_ITER; i++) {
+          if (g_target_mV != lastTarget) break;   // new target arrived
+          if (r_now < FINE_TUNE_R2_MIN) break;     // step too coarse at high V
+
+          sum = 0;
+          for (int s = 0; s < 3; s++) {
+            sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
+            if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
+          }
+          uint32_t measured = (sum / 3) * 11;
+          g_measured_mV = measured;
+
+          long diff = (long)target - (long)measured;
+          if (abs(diff) <= (long)VOLTAGE_TOL_MV) break;
+
+          if (diff > 0) r_now = max(r_now - 79, 0);
+          else          r_now = min(r_now + 79, DC_R2_REF);
+          i2cDP.setResistance((uint32_t)r_now);
+          Serial.printf("[VCtrl] fine-tune #%d R=%d meas=%umV\n", i + 1, r_now, measured);
+          vTaskDelay(pdMS_TO_TICKS(80));
+        }
+      }
+    } else {
+      // Idle — keep measured voltage fresh for browser
+      vTaskDelay(pdMS_TO_TICKS(MONITOR_MS));
+      uint32_t sum = 0;
+      for (int s = 0; s < 3; s++) {
+        sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
+        if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
+      }
+      g_measured_mV = (sum / 3) * 11;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 }
 
 void ota_task(void *pv) {
@@ -422,6 +423,7 @@ void setup() {
   } else {
     Serial.println("WARNING: MCP4017 not found at 0x2F — check I2C wiring!");
   }
+  xTaskCreatePinnedToCore(voltageControlTask, "VoltCtrl", 4096, nullptr, 2, nullptr, 0);
   ret = connect_wifi();
   if (ret != 0) {
     Serial.println("Failed to connect to any wifi network");
@@ -455,7 +457,12 @@ void setup() {
     if (request->hasParam("value", true))
       value = request->getParam("value", true)->value().toFloat();
     if (action == "toggle") setOutput(output, value == 1.0f);
-    if (action == "set_voltage" && output == 1) setVoltage(value);
+    if (action == "set_voltage" && output == 1) {
+      uint32_t mv = (uint32_t)(value * 1000.0f);
+      g_target_mV   = mv;
+      g_setpoint_mV = mv;
+      psState.voltage1 = value;
+    }
     request->send(200, "text/plain", "OK");
   });
 
@@ -466,7 +473,8 @@ void setup() {
     json += "\"output1\":" + String(psState.output1 ? "true" : "false") + ",";
     json += "\"output2\":" + String(psState.output2 ? "true" : "false") + ",";
     json += "\"output3\":" + String(psState.output3 ? "true" : "false") + ",";
-    json += "\"voltage1\":" + String(psState.voltage1, 2) + ",";
+    json += "\"voltage1\":" + String(g_measured_mV / 1000.0f, 2) + ",";
+    json += "\"setpoint1\":" + String(g_setpoint_mV / 1000.0f, 2) + ",";
     json += "\"voltage2\":" + String(read_5V_volt() / 1000.0, 2) + ",";
     json += "\"voltage3\":" + String(read_3V3_volt() / 1000.0, 2);
     json += "}";
