@@ -255,7 +255,7 @@ void vb_fill_status(JsonDocument &d) {
   d["output2"]  = psState.output2;
   d["output3"]  = psState.output3;
   // read_VV_volt() = 5-sample rolling average — smoother than raw g_measured_mV
-  d["voltage1"] = read_VV_volt() / 1000.0f;
+  d["voltage1"] = g_measured_mV / 1000.0f;
   d["voltage2"] = read_5V_volt()  / 1000.0f;
   d["voltage3"] = read_3V3_volt() / 1000.0f;
   d["current1"] = vb_read_current(1);

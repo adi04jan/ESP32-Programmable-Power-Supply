@@ -114,7 +114,7 @@ void setVoltage(float voltage) {
 // =============================================================================
 void voltageControlTask(void* pvParameters) {
   const int      FINE_TUNE_R2_MIN  = 3000;  // below this ohms each step > 100 mV tolerance
-  const int      FINE_TUNE_MAX     = 3;
+  const int      FINE_TUNE_MAX     = 8;
   const uint32_t VOLTAGE_TOL_MV    = 100;
   const uint32_t MONITOR_MS        = 200;
 
@@ -239,6 +239,7 @@ void setup() {
   digitalWrite(ENABLE_5V_PIN,  LOW);
   digitalWrite(ENABLE_3V3_PIN, LOW);
 
+  analogSetAttenuation(ADC_11db);   // 0–2500 mV input → supports output up to ~27.5 V
   analogReadResolution(12);
   Wire.begin();
   Wire.beginTransmission(MCP4017ADDRESS);

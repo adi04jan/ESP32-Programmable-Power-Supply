@@ -1078,6 +1078,7 @@ let info = null;
 let lastStatus = null;
 let pollTimer = null;
 let pollRate = 250;
+let settingsTabActive = false;
 
 /* ---------- History (localStorage) -------------------------------- */
 const HIST_KEY = "ps_hist";   // [{t, v1, v2, v3, o1, o2, o3, s1}]
@@ -1628,9 +1629,9 @@ function renderSSIDs(){
 /* ---------- Info refresh ------------------------------------------ */
 async function loadInfo(){
   info = await api("/api/info");
+  // Always-update display fields (read-only, never cause form revert)
   $("#brand-mdns").textContent = info.mdns + ".local";
   $("#mdns-preview").textContent = info.mdns;
-  $("#mdns-input").value = info.mdns;
   $("#info-ssid").textContent = info.ssid;
   $("#info-ip").textContent = info.ip;
   $("#info-mac").textContent = info.mac;
@@ -1638,35 +1639,8 @@ async function loadInfo(){
   $("#info-fw").textContent = "v" + info.fw;
   $("#info-uptime").textContent = fmtUptime(info.uptime);
   $("#conn-ip").textContent = info.ip;
-  $("#opt-login").checked = info.require_login;
-  $("#ota-url").value = info.ota.url;
-  $("#ota-ssl").checked = info.ota.ssl;
-  $("#ota-auto").checked = info.ota.auto;
-  $("#ota-warn").style.display = info.ota.ssl ? "none" : "flex";
-  $("#opt-current").checked = info.exp.current;
-  $("#opt-fast").checked = info.exp.fast;
-  $("#opt-smooth").checked = info.exp.smooth;
-  $("#opt-dial").checked = !!info.exp.dial;
-  applyDialMode();
-
-  // Safety guards
-  const g = info.guard || {};
-  $("#ocp-en").checked = !!g.ocp;
-  $("#otp-en").checked = !!g.otp;
-  $("#otp-temp").value = g.otp_temp ?? 85;
-  $("#guard-recover").checked = !!g.recover;
-
-  // MQTT
-  const m = info.mqtt || {};
-  $("#mqtt-en").checked = !!m.enabled;
-  $("#mqtt-host").value = m.host || "";
-  $("#mqtt-port").value = m.port || 1883;
-  $("#mqtt-user").value = m.user || "";
-  $("#mqtt-topic").value = m.topic || "voltbench";
-
-  // Captive portal banner
+  // Captive portal banner always updates
   $("#captive-banner").style.display = info.captive ? "flex" : "none";
-
   // WebSocket help card
   const wsBase = info.ip ? `ws://${info.ip}/ws` : `ws://${info.mdns}.local/ws`;
   const wsUrlEl = $("#ws-url"); if (wsUrlEl) wsUrlEl.textContent = wsBase;
@@ -1674,6 +1648,34 @@ async function loadInfo(){
   if (wsTokEl){
     const tok = sessionStorage.getItem("ps_token");
     wsTokEl.textContent = tok || (info.require_login ? "(log in first)" : "not required");
+  }
+  // Logout button visibility always updates
+  $("#logout-btn").style.display = info?.require_login ? "grid" : "none";
+  // Settings form fields — only sync when user is NOT on the settings tab.
+  // Prevents the 10-second periodic refresh from overwriting unsaved changes.
+  if (!settingsTabActive){
+    $("#mdns-input").value = info.mdns;
+    $("#opt-login").checked = info.require_login;
+    $("#ota-url").value = info.ota.url;
+    $("#ota-ssl").checked = info.ota.ssl;
+    $("#ota-auto").checked = info.ota.auto;
+    $("#ota-warn").style.display = info.ota.ssl ? "none" : "flex";
+    $("#opt-current").checked = info.exp.current;
+    $("#opt-fast").checked = info.exp.fast;
+    $("#opt-smooth").checked = info.exp.smooth;
+    $("#opt-dial").checked = !!info.exp.dial;
+    applyDialMode();
+    const g = info.guard || {};
+    $("#ocp-en").checked = !!g.ocp;
+    $("#otp-en").checked = !!g.otp;
+    $("#otp-temp").value = g.otp_temp ?? 85;
+    $("#guard-recover").checked = !!g.recover;
+    const m = info.mqtt || {};
+    $("#mqtt-en").checked = !!m.enabled;
+    $("#mqtt-host").value = m.host || "";
+    $("#mqtt-port").value = m.port || 1883;
+    $("#mqtt-user").value = m.user || "";
+    $("#mqtt-topic").value = m.topic || "voltbench";
   }
 }
 
@@ -1684,6 +1686,7 @@ function applyDialMode(){
 
 /* ---------- Tabs --------------------------------------------------- */
 function switchTab(name){
+  settingsTabActive = (name === "settings");
   $$(".appbar nav button").forEach(b => b.classList.toggle("active", b.dataset.tab===name));
   $$(".view").forEach(v => v.classList.remove("active"));
   $("#"+name+"-view").classList.add("active");
@@ -1806,6 +1809,12 @@ $("#save-security").addEventListener("click", async ()=>{
   await api("/api/settings", {method:"POST", body: JSON.stringify(body)});
   $("#pw-new").value = "";
   toast("Security saved", body.password ? "Password changed." : "Settings updated.");
+  // Force one re-sync from server to confirm the saved value, even while on settings tab
+  setTimeout(async () => {
+    settingsTabActive = false;
+    await loadInfo();
+    settingsTabActive = true;
+  }, 1200);
 });
 
 /* Settings — Wi-Fi */
