@@ -326,13 +326,14 @@ const char index_html[] PROGMEM = R"rawliteral(
             </div>
             <div class="display" id="display1">0.0V</div>
             <div class="slider-container">
-                <input type="range" min="2.5" max="15" step="0.1" value="2.5" class="slider" id="voltage1">
+                <input type="range" min="2.5" max="19" step="0.1" value="2.5" class="slider" id="voltage1">
                 <!-- Quick Set Buttons Start -->
                 <div style="display:flex; gap:8px; margin-top:10px;">
                     <button class="toggle-btn" style="padding:6px 10px; font-size:0.85rem;" onclick="setPresetVoltage(3.3)">3.3V</button>
                     <button class="toggle-btn" style="padding:6px 10px; font-size:0.85rem;" onclick="setPresetVoltage(5)">5V</button>
                     <button class="toggle-btn" style="padding:6px 10px; font-size:0.85rem;" onclick="setPresetVoltage(12)">12V</button>
-                    <button class="toggle-btn" style="padding:6px 10px; font-size:0.85rem;" onclick="setPresetVoltage(13.5)">13.5V</button>
+                    <button class="toggle-btn" style="padding:6px 10px; font-size:0.85rem;" onclick="setPresetVoltage(15)">15V</button>
+                    <button class="toggle-btn" style="padding:6px 10px; font-size:0.85rem;" onclick="setPresetVoltage(19)">19V</button>
                 </div>
                 <!-- Quick Set Buttons End -->
             </div>
