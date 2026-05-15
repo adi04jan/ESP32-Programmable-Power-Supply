@@ -74,7 +74,7 @@ static int read_any_volt(int pin, uint32_t *sample, bool *firstrun, int sc) {
 int read_VV_volt() {
   const int sc = 5;
   static uint32_t s[sc] = {0}; static bool init = false;
-  return read_any_volt(VOLTAGE_READ_PIN_VV, s, &init, sc) * 11;
+  return read_any_volt(VOLTAGE_READ_PIN_VV, s, &init, sc) * 48;
 }
 int read_5V_volt() {
   const int sc = 5;
@@ -113,11 +113,7 @@ void setVoltage(float voltage) {
 //   Runs on core 0, priority 2. Web handlers return immediately.
 // =============================================================================
 void voltageControlTask(void* pvParameters) {
-  const int      FINE_TUNE_R2_MIN  = 3000;  // below this ohms each step > 100 mV tolerance
-  const int      FINE_TUNE_MAX     = 8;
-  const uint32_t VOLTAGE_TOL_MV    = 100;
-  const uint32_t MONITOR_MS        = 200;
-
+  const uint32_t MONITOR_MS = 200;
   uint32_t lastTarget = g_target_mV;
 
   for (;;) {
@@ -125,8 +121,7 @@ void voltageControlTask(void* pvParameters) {
 
     if (target != lastTarget) {
       lastTarget = target;
-
-      // Formula-based initial resistance set
+      // Formula-based set, then freeze — no fine-tune
       if (target > (uint32_t)DC_V_REF) {
         long r_calc = (long)((DC_R2_REF * DC_V_REF) / (target - DC_V_REF)) - MCPWIPEROHMS;
         uint32_t r_val = (r_calc > 0) ? (uint32_t)r_calc : 0;
@@ -134,49 +129,20 @@ void voltageControlTask(void* pvParameters) {
         Serial.printf("[VCtrl] target=%umV R=%u\n", target, r_val);
       }
       vTaskDelay(pdMS_TO_TICKS(150));
-
-      // Fresh 3-sample read
       uint32_t sum = 0;
-      for (int s = 0; s < 3; s++) {
+      for (int s = 0; s < 8; s++) {
         sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-        if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(10));
       }
-      g_measured_mV = (sum / 3) * 11;
-
-      // Fine-tune only in low-voltage range (R2 large enough that each step ≤ tolerance)
-      if (g_ctrl_output1) {
-        int r_now = (int)i2cDP.calcResistance();
-        for (int i = 0; i < FINE_TUNE_MAX; i++) {
-          if (g_target_mV != lastTarget) break;   // new target arrived — abort
-          if (r_now < FINE_TUNE_R2_MIN)  break;   // step too coarse at high V
-
-          sum = 0;
-          for (int s = 0; s < 3; s++) {
-            sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-            if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
-          }
-          uint32_t measured = (sum / 3) * 11;
-          g_measured_mV = measured;
-
-          long diff = (long)target - (long)measured;
-          if (abs(diff) <= (long)VOLTAGE_TOL_MV) break;
-
-          if (diff > 0) r_now = max(r_now - 79, 0);
-          else          r_now = min(r_now + 79, DC_R2_REF);
-          i2cDP.setResistance((uint32_t)r_now);
-          Serial.printf("[VCtrl] fine-tune #%d R=%d meas=%umV\n", i+1, r_now, measured);
-          vTaskDelay(pdMS_TO_TICKS(80));
-        }
-      }
+      g_measured_mV = (sum / 8) * 48;
     } else {
-      // Idle — keep measured voltage fresh for WebSocket push
       vTaskDelay(pdMS_TO_TICKS(MONITOR_MS));
       uint32_t sum = 0;
-      for (int s = 0; s < 3; s++) {
+      for (int s = 0; s < 8; s++) {
         sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-        if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(10));
       }
-      g_measured_mV = (sum / 3) * 11;
+      g_measured_mV = (sum / 8) * 48;
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
