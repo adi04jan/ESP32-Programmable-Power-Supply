@@ -346,6 +346,10 @@ void fine_tune_volt(uint32_t target_mV) {
 }
 
 void set_voltage(uint32_t target_mV) {
+  if (target_mV <= DC_V_REF) {
+    Serial.println("set_voltage: target below reference voltage, ignoring");
+    return;
+  }
   //Power_OFF(ENABLE_VV_PIN);
   long resistance_calc = (long)((DC_R2_REF * DC_V_REF) / (target_mV - DC_V_REF)) - MCPWIPEROHMS;
   uint64_t resistance_val = (resistance_calc > 0) ? (uint64_t)resistance_calc : 0;
@@ -357,7 +361,7 @@ void set_voltage(uint32_t target_mV) {
   for (int i = 0; i < 3; i++) {
     measured = read_VV_volt();
     long diff = (long)target_mV - (long)measured;
-    if (abs(diff) < VOLTAGE_ERROR_MAX) {
+    if (abs(diff) <= VOLTAGE_ERROR_MAX) {
       break;  // already within tolerance
     }
     fine_tune_volt(target_mV);
