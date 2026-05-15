@@ -48,7 +48,6 @@ struct State {
   float voltage1 = 2.5;  // initial (slider default)
 } psState;
 
-float control_voltage = 0;
 static const char *server_certificate = "-----BEGIN CERTIFICATE-----\n"
                                         "MIIEkjCCA3qgAwIBAgIQCgFBQgAAAVOFc2oLheynCDANBgkqhkiG9w0BAQsFADA/\n"
                                         "MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT\n"
@@ -433,16 +432,17 @@ void setup() {
   });
 
   server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request) {
-    String action, sval;
+    String action;
     int output = 0;
+    float value = 0.0f;
     if (request->hasParam("action", true))
       action = request->getParam("action", true)->value();
     if (request->hasParam("output", true))
       output = request->getParam("output", true)->value().toInt();
     if (request->hasParam("value", true))
-      control_voltage = request->getParam("value", true)->value().toFloat();
-    if (action == "toggle") setOutput(output, control_voltage == 1);
-    if (action == "set_voltage" && output == 1) setVoltage(control_voltage);
+      value = request->getParam("value", true)->value().toFloat();
+    if (action == "toggle") setOutput(output, value == 1.0f);
+    if (action == "set_voltage" && output == 1) setVoltage(value);
     request->send(200, "text/plain", "OK");
   });
 
