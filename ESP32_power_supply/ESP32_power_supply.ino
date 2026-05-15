@@ -3,7 +3,7 @@
 //   Hardware: LM2596-ADJ (variable), Mini360 5V, LM1117 3.3V
 //             MCP4017T-103E/LT (10K, 128-step) I2C digital pot @ 0x2F
 //             Voltage divider: VOUT — 10K — FB — MCP4017 — GND
-//             ADC divider:     VOUT — 47K:1K → VOLTAGE_READ_PIN_VV (×48 scale)
+//             ADC divider:     VOUT — 10K:1K → VOLTAGE_READ_PIN_VV (×11 scale)
 // =============================================================================
 #pragma GCC optimize("Os")   // optimize for size — recovers ~50-80 KB
 #include <Wire.h>
@@ -74,7 +74,7 @@ static int read_any_volt(int pin, uint32_t *sample, bool *firstrun, int sc) {
 int read_VV_volt() {
   const int sc = 5;
   static uint32_t s[sc] = {0}; static bool init = false;
-  return read_any_volt(VOLTAGE_READ_PIN_VV, s, &init, sc) * 48;
+  return read_any_volt(VOLTAGE_READ_PIN_VV, s, &init, sc) * 11;
 }
 int read_5V_volt() {
   const int sc = 5;
@@ -141,7 +141,7 @@ void voltageControlTask(void* pvParameters) {
         sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
         if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
       }
-      g_measured_mV = (sum / 3) * 48;
+      g_measured_mV = (sum / 3) * 11;
 
       // Fine-tune only in low-voltage range (R2 large enough that each step ≤ tolerance)
       if (g_ctrl_output1) {
@@ -155,7 +155,7 @@ void voltageControlTask(void* pvParameters) {
             sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
             if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
           }
-          uint32_t measured = (sum / 3) * 48;
+          uint32_t measured = (sum / 3) * 11;
           g_measured_mV = measured;
 
           long diff = (long)target - (long)measured;
@@ -176,7 +176,7 @@ void voltageControlTask(void* pvParameters) {
         sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
         if (s < 2) vTaskDelay(pdMS_TO_TICKS(10));
       }
-      g_measured_mV = (sum / 3) * 48;
+      g_measured_mV = (sum / 3) * 11;
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
