@@ -280,15 +280,10 @@ int read_any_volt(int pin, uint32_t *sample, bool *firstrun, int sample_c) {
 }
 
 int read_VV_volt() {
-  const int sample_c = 2;
+  const int sample_c = 5;
   static uint32_t samples[sample_c] = { 0 };
   static bool initialized = false;
-  uint32_t VV_voltage = 0;
-  // for (int i = 0; i < sample_c; i++) {
-  //   VV_voltage = (read_any_volt(VOLTAGE_READ_PIN_VV, samples, &initialized, sample_c) * 11);
-  //   delay(25);
-  // }
-  VV_voltage = analogReadMilliVolts(VOLTAGE_READ_PIN_VV) * 11;
+  uint32_t VV_voltage = (read_any_volt(VOLTAGE_READ_PIN_VV, samples, &initialized, sample_c) * 11);
   return VV_voltage;
 }
 
