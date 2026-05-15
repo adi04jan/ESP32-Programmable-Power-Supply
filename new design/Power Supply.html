@@ -1,0 +1,1938 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#0a0d12" />
+<title>Voltbench — Programmable Power Supply</title>
+<style>
+/* ---------- Reset / base ---------------------------------------------- */
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font-size:14px;
+  color:#dfe5ed;
+  background:#07090d;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{background:none;border:0;cursor:pointer;color:inherit}
+a{color:#7ee2b8;text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ---------- Design tokens --------------------------------------------- */
+:root{
+  --bg:#07090d;
+  --panel:#0e1218;
+  --panel-2:#141923;
+  --line:#1c2230;
+  --line-2:#28303f;
+  --text:#e6ecf3;
+  --muted:#8895a8;
+  --dim:#54607a;
+  --accent:#3dd68c;          /* primary green = channel V */
+  --accent-soft:#1a3d2c;
+  --cyan:#5ec6f0;
+  --amber:#f0b04a;
+  --red:#ef5a5a;
+  --violet:#a78bfa;
+  --grad-on:linear-gradient(180deg,#1f3a2a 0%,#0e1d15 100%);
+  --shadow-lg:0 24px 60px -20px rgba(0,0,0,.55),0 2px 0 rgba(255,255,255,.02) inset;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+
+/* ---------- App scaffold ---------------------------------------------- */
+.app{
+  display:grid;
+  grid-template-rows:auto 1fr;
+  min-height:100%;
+  background:
+    radial-gradient(1200px 600px at 80% -10%,rgba(61,214,140,.05),transparent 60%),
+    radial-gradient(900px 500px at -10% 110%,rgba(94,198,240,.04),transparent 60%),
+    var(--bg);
+}
+
+.appbar{
+  display:flex;align-items:center;gap:14px;
+  padding:12px 18px;
+  border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(20,25,35,.7),rgba(14,18,24,.7));
+  backdrop-filter:saturate(140%) blur(10px);
+}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:.02em}
+.brand .logo{
+  width:26px;height:26px;border-radius:7px;
+  background:linear-gradient(135deg,#1d2a1f,#0d1813);
+  border:1px solid #25402f;
+  display:grid;place-items:center;
+  box-shadow:0 0 0 1px rgba(61,214,140,.18) inset,0 0 14px rgba(61,214,140,.14);
+}
+.brand .logo svg{width:14px;height:14px;color:var(--accent)}
+.brand .name{font-size:14px}
+.brand .name .sub{color:var(--muted);font-weight:400;margin-left:6px;font-size:12px}
+
+.appbar nav{display:flex;gap:2px;margin-left:14px;padding:3px;background:#0a0d13;border:1px solid var(--line);border-radius:10px}
+.appbar nav button{
+  padding:7px 13px;border-radius:7px;color:var(--muted);font-size:13px;font-weight:500;
+  transition:background .15s,color .15s;
+}
+.appbar nav button:hover{color:var(--text)}
+.appbar nav button.active{background:#161c27;color:var(--text);box-shadow:0 1px 0 rgba(255,255,255,.04) inset}
+
+.appbar .spacer{flex:1}
+
+.statuspill{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:6px 12px;border-radius:999px;
+  background:#0a0d13;border:1px solid var(--line);
+  font-size:12px;color:var(--muted);
+}
+.statuspill .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);transition:.2s}
+.statuspill.ok .dot{background:var(--accent);box-shadow:0 0 0 3px rgba(61,214,140,.15)}
+.statuspill.warn .dot{background:var(--amber)}
+.statuspill.err .dot{background:var(--red);box-shadow:0 0 0 3px rgba(239,90,90,.15)}
+.statuspill code{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+
+.icon-btn{
+  width:34px;height:34px;border-radius:8px;display:grid;place-items:center;
+  color:var(--muted);border:1px solid transparent;
+}
+.icon-btn:hover{background:#161c27;color:var(--text)}
+.icon-btn svg{width:16px;height:16px}
+
+/* ---------- Views ----------------------------------------------------- */
+.view{display:none;animation:fade .18s ease}
+.view.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
+
+/* ---------- Login ----------------------------------------------------- */
+#login-view{display:none;place-items:center;min-height:100vh;padding:24px}
+#login-view.active{display:grid}
+.login-card{
+  width:380px;max-width:100%;
+  background:linear-gradient(180deg,rgba(22,28,39,.85),rgba(14,18,24,.85));
+  border:1px solid var(--line);border-radius:18px;
+  padding:28px;
+  box-shadow:var(--shadow-lg);
+}
+.login-card .logo-lg{
+  width:48px;height:48px;border-radius:14px;
+  background:linear-gradient(135deg,#1d2a1f,#0d1813);
+  border:1px solid #25402f;
+  display:grid;place-items:center;margin-bottom:18px;
+  box-shadow:0 0 0 1px rgba(61,214,140,.2) inset,0 0 26px rgba(61,214,140,.16);
+}
+.login-card .logo-lg svg{width:22px;height:22px;color:var(--accent)}
+.login-card h1{font-size:20px;margin:0 0 4px;letter-spacing:.01em}
+.login-card .hint{color:var(--muted);font-size:13px;margin-bottom:22px}
+.login-card .err{
+  display:none;background:rgba(239,90,90,.08);border:1px solid rgba(239,90,90,.3);
+  color:#ffbdbd;padding:9px 12px;border-radius:8px;font-size:13px;margin-bottom:12px;
+}
+.login-card .err.show{display:block}
+
+/* ---------- Form controls -------------------------------------------- */
+.field{display:block;margin-bottom:14px}
+.field > label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;letter-spacing:.02em}
+.input,.select{
+  width:100%;padding:10px 12px;
+  background:#0a0d13;border:1px solid var(--line);border-radius:9px;
+  color:var(--text);font-size:14px;
+  transition:border-color .15s,background .15s,box-shadow .15s;
+}
+.input:focus,.select:focus{outline:none;border-color:#2c5a44;box-shadow:0 0 0 3px rgba(61,214,140,.12)}
+.input::placeholder{color:var(--dim)}
+.select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%238895a8' stroke-width='1.5'><path d='M3 4.5l3 3 3-3'/></svg>");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:10px 14px;border-radius:9px;font-weight:600;font-size:13px;
+  background:#161c27;border:1px solid var(--line-2);color:var(--text);
+  transition:background .15s,border-color .15s,transform .05s;
+}
+.btn:hover{background:#1c2434;border-color:#39455a}
+.btn:active{transform:translateY(1px)}
+.btn.primary{
+  background:linear-gradient(180deg,#33c780,#28a268);
+  border-color:#1f8a57;color:#062014;
+  box-shadow:0 4px 16px -6px rgba(40,160,100,.5),0 1px 0 rgba(255,255,255,.18) inset;
+}
+.btn.primary:hover{background:linear-gradient(180deg,#3bd58a,#2caf72)}
+.btn.danger{background:#311818;border-color:#542424;color:#ffb4b4}
+.btn.danger:hover{background:#3d1d1d;border-color:#7a3232}
+.btn.ghost{background:transparent;border-color:var(--line)}
+.btn.ghost:hover{background:#0f141e}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn .spin{width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- Dashboard ------------------------------------------------- */
+.page{padding:18px 18px 48px;max-width:1280px;margin:0 auto}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;gap:18px;flex-wrap:wrap}
+.page-head h2{margin:0;font-size:20px;font-weight:600;letter-spacing:-.005em}
+.page-head .sub{color:var(--muted);font-size:13px;margin-top:4px}
+
+.channels{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+
+.channel{
+  position:relative;
+  background:linear-gradient(180deg,#10141b,#0c1016);
+  border:1px solid var(--line);
+  border-radius:14px;padding:18px;
+  transition:border-color .2s,box-shadow .2s;
+  overflow:hidden;
+}
+.channel.on{
+  border-color:#1f5a3c;
+  box-shadow:0 0 0 1px rgba(61,214,140,.18) inset, 0 18px 50px -30px rgba(61,214,140,.4);
+}
+.channel::before{
+  content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:#1a2330;transition:background .25s;
+}
+.channel.on::before{background:linear-gradient(180deg,#3dd68c,#1a8a55)}
+
+.ch-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.ch-tag{
+  display:inline-flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.12em;
+  color:var(--muted);text-transform:uppercase;
+}
+.ch-tag .pin{padding:2px 7px;border:1px solid var(--line-2);border-radius:5px;background:#0a0d13;color:var(--text);font-size:10px}
+.ch-title{font-weight:600;font-size:15px;letter-spacing:-.005em}
+.ch-state{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.ch-state .led{width:8px;height:8px;border-radius:50%;background:#2a3140;transition:.2s}
+.channel.on .ch-state .led{background:var(--accent);box-shadow:0 0 0 3px rgba(61,214,140,.18)}
+
+.readout{
+  display:flex;align-items:baseline;gap:10px;
+  padding:12px 4px 6px;
+}
+.readout .num{
+  font-family:var(--mono);font-weight:600;
+  font-size:46px;line-height:1;letter-spacing:-.02em;
+  color:#9aa8be;
+  font-variant-numeric:tabular-nums;
+  transition:color .25s;
+}
+.channel.on .readout .num{color:var(--accent);text-shadow:0 0 22px rgba(61,214,140,.18)}
+.readout .unit{font-family:var(--mono);font-size:14px;color:var(--muted);font-weight:500;letter-spacing:.04em}
+.readout .delta{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim)}
+.readout .delta.warn{color:var(--amber)}
+
+.current-row{
+  display:none;
+  padding:6px 4px 12px;
+  border-top:1px dashed var(--line);
+  margin-top:6px;
+}
+.current-row.show{display:flex;align-items:baseline;gap:8px}
+.current-row .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+.current-row .val{font-family:var(--mono);font-size:18px;color:var(--cyan);font-variant-numeric:tabular-nums}
+.current-row .u{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.current-row .exp{margin-left:auto;font-size:10px;color:var(--amber);font-family:var(--mono);letter-spacing:.05em}
+
+.ch-controls{margin-top:14px;display:flex;flex-direction:column;gap:12px}
+
+/* Slider */
+.slider-row{display:flex;align-items:center;gap:12px}
+.slider-row .min,.slider-row .max{font-family:var(--mono);font-size:10.5px;color:var(--muted);min-width:34px}
+.slider-row .max{text-align:right}
+.slider{
+  flex:1;-webkit-appearance:none;appearance:none;
+  height:6px;background:#0a0d13;border-radius:4px;
+  border:1px solid var(--line);
+  outline:none;
+}
+.slider::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:18px;height:18px;border-radius:50%;
+  background:linear-gradient(180deg,#42dc92,#2aa46a);
+  border:1px solid #1b6a44;
+  box-shadow:0 2px 8px rgba(0,0,0,.4),0 0 0 4px rgba(61,214,140,.0);
+  cursor:pointer;transition:box-shadow .15s;
+}
+.slider:hover::-webkit-slider-thumb{box-shadow:0 2px 8px rgba(0,0,0,.4),0 0 0 6px rgba(61,214,140,.12)}
+.slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:linear-gradient(180deg,#42dc92,#2aa46a);border:1px solid #1b6a44;cursor:pointer}
+
+.set-row{display:flex;gap:8px;align-items:center}
+.set-row .target{display:flex;align-items:baseline;gap:6px;flex:1;background:#0a0d13;border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.set-row .target input{
+  width:100%;background:transparent;border:0;outline:none;
+  font-family:var(--mono);font-size:18px;color:var(--text);font-variant-numeric:tabular-nums;
+}
+.set-row .target .u{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.set-row .apply{flex-shrink:0}
+
+/* Toggle */
+.toggle{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle .track{
+  position:absolute;inset:0;border-radius:999px;background:#1a2030;border:1px solid var(--line-2);
+  transition:.2s;cursor:pointer;
+}
+.toggle .track::before{
+  content:"";position:absolute;left:2px;top:1px;width:18px;height:18px;border-radius:50%;
+  background:linear-gradient(180deg,#7a8696,#54607a);
+  transition:.2s;
+}
+.toggle input:checked + .track{background:linear-gradient(180deg,#1f5a3c,#143e29);border-color:#1f7a4f}
+.toggle input:checked + .track::before{transform:translateX(20px);background:linear-gradient(180deg,#3dd68c,#1f8a55)}
+
+.power-row{display:flex;align-items:center;justify-content:space-between;padding-top:4px;border-top:1px solid var(--line)}
+.power-row .lbl{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.power-row .lbl svg{width:14px;height:14px}
+
+/* ---------- History view --------------------------------------------- */
+.toolbar{
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:10px 12px;margin-bottom:14px;
+}
+.seg{display:inline-flex;background:#0a0d13;border:1px solid var(--line);border-radius:8px;padding:3px}
+.seg button{padding:6px 10px;font-size:12px;color:var(--muted);border-radius:5px;font-weight:500}
+.seg button.active{background:#161c27;color:var(--text)}
+.toolbar .label{font-size:12px;color:var(--muted);margin-right:4px}
+.toolbar .spacer{flex:1}
+
+.graph-wrap{
+  background:linear-gradient(180deg,#0c1016,#0a0d13);
+  border:1px solid var(--line);border-radius:14px;
+  padding:16px;
+  position:relative;
+}
+canvas#graph{display:block;width:100%;height:380px}
+.graph-legend{display:flex;gap:18px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--line);margin-top:12px}
+.legend-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.legend-item .swatch{width:14px;height:3px;border-radius:2px}
+.legend-item .swatch.dash{background-image:linear-gradient(90deg,currentColor 50%,transparent 50%);background-size:6px 100%;height:2px}
+
+.event-list{
+  margin-top:18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  overflow:hidden;
+}
+.event-list header{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+.event-list header h3{margin:0;font-size:13px;font-weight:600;letter-spacing:.01em}
+.event-list .list{max-height:260px;overflow:auto;font-family:var(--mono);font-size:12.5px}
+.event-list .row{display:grid;grid-template-columns:130px 80px 70px 1fr;gap:14px;padding:8px 14px;border-top:1px solid #131823}
+.event-list .row:first-child{border-top:0}
+.event-list .row .t{color:var(--muted)}
+.event-list .row .ch{color:var(--text)}
+.event-list .row.on .badge{color:#a4f0c8}
+.event-list .row.off .badge{color:#ffb6b6}
+.event-list .row.set .badge{color:#cdbaff}
+.event-list .badge{display:inline-block;padding:1px 7px;border:1px solid var(--line-2);border-radius:4px;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase}
+.event-list .v{color:var(--text)}
+.event-list .empty{padding:30px;text-align:center;color:var(--muted);font-size:13px}
+
+/* ---------- Settings -------------------------------------------------- */
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px}
+.card{
+  background:linear-gradient(180deg,#10141b,#0c1016);
+  border:1px solid var(--line);border-radius:14px;
+  padding:18px;
+}
+.card h3{margin:0 0 4px;font-size:14px;font-weight:600;letter-spacing:.005em}
+.card .desc{color:var(--muted);font-size:12.5px;margin-bottom:16px;line-height:1.55}
+.card .row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.card .row:first-of-type{border-top:0;padding-top:4px}
+.card .row .k{display:flex;flex-direction:column}
+.card .row .k .lbl{font-size:13px}
+.card .row .k .sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+.card .row .v{font-family:var(--mono);font-size:12.5px;color:var(--text)}
+.card .row.action{padding-top:16px;border-top:0;justify-content:flex-end;gap:8px}
+.card .full{margin-top:10px}
+.card .ssid-list{margin-top:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden;max-height:200px;overflow-y:auto}
+.card .ssid-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:10px 12px;border-top:1px solid #131823;cursor:pointer;transition:background .12s}
+.card .ssid-row:first-child{border-top:0}
+.card .ssid-row:hover{background:#11151e}
+.card .ssid-row.selected{background:#13241a}
+.card .ssid-row .name{font-size:13px}
+.card .ssid-row .rssi{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.card .ssid-row .lock{color:var(--dim)}
+.card .empty{padding:18px;text-align:center;color:var(--muted);font-size:12.5px}
+
+.kbd{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px;background:#0a0d13;border:1px solid var(--line-2);color:var(--muted)}
+
+/* ---------- Toast ----------------------------------------------------- */
+.toast-host{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:100;pointer-events:none}
+.toast{
+  background:#141923;border:1px solid var(--line-2);border-radius:10px;
+  padding:12px 14px;min-width:240px;max-width:340px;
+  box-shadow:0 18px 40px -16px rgba(0,0,0,.6);
+  display:flex;gap:10px;align-items:flex-start;
+  animation:slidein .2s ease;pointer-events:auto;
+}
+.toast.ok{border-color:#1f5a3c}
+.toast.err{border-color:#542424}
+.toast.warn{border-color:#5a4520}
+.toast .dot{width:8px;height:8px;border-radius:50%;margin-top:5px;background:var(--accent);flex-shrink:0}
+.toast.err .dot{background:var(--red)}
+.toast.warn .dot{background:var(--amber)}
+.toast .body{flex:1}
+.toast .ttl{font-size:13px;font-weight:600}
+.toast .msg{font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.45}
+@keyframes slidein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ---------- Misc ------------------------------------------------------ */
+.banner{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 12px;border:1px solid #5a4520;background:rgba(240,176,74,.06);
+  border-radius:10px;color:#f0c98e;font-size:12.5px;margin-bottom:14px;
+}
+.banner.danger{border-color:#542424;background:rgba(239,90,90,.06);color:#ffb4b4}
+.banner svg{width:16px;height:16px;flex-shrink:0}
+
+.progress{height:6px;background:#0a0d13;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:8px;display:none}
+.progress.show{display:block}
+.progress .bar{height:100%;background:linear-gradient(90deg,#2aa46a,#3dd68c);width:0;transition:width .25s}
+
+/* ---------- Channel extras: presets, current-limit, dial -------------- */
+.presets{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.chip{
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.02em;
+  padding:5px 9px;border-radius:6px;
+  background:#0a0d13;border:1px solid var(--line);color:var(--muted);
+  transition:background .12s,color .12s,border-color .12s;
+}
+.chip:hover{background:#161c27;color:var(--text);border-color:var(--line-2)}
+.chip.active{background:#13241a;color:#a4f0c8;border-color:#1f5a3c}
+.chip.add{color:var(--muted);border-style:dashed}
+
+.ilimit-row{
+  display:none;align-items:center;gap:8px;
+  padding:8px 4px 4px;border-top:1px dashed var(--line);margin-top:6px;
+}
+.ilimit-row.show{display:flex}
+.ilimit-row .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+.ilimit-row .field-mini{display:flex;align-items:baseline;background:#0a0d13;border:1px solid var(--line);border-radius:6px;padding:4px 8px;gap:4px;flex:1}
+.ilimit-row .field-mini input{width:100%;background:transparent;border:0;outline:none;font-family:var(--mono);font-size:13px;color:var(--text);font-variant-numeric:tabular-nums}
+.ilimit-row .field-mini .u{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.ilimit-row .pill{padding:2px 7px;border-radius:4px;font-size:10.5px;font-family:var(--mono);letter-spacing:.05em;border:1px solid transparent}
+.ilimit-row .pill.cv{color:#a4f0c8;border-color:#1f5a3c;background:#102016}
+.ilimit-row .pill.cc{color:#ffcf94;border-color:#5a4520;background:#1f160a}
+.ilimit-row .pill.tripped{color:#ffb4b4;border-color:#542424;background:#1c0e0e}
+
+/* Dial (alternative input mode) */
+.dial-wrap{display:none;flex-direction:column;align-items:center;gap:10px;padding:6px 0 2px}
+.channel.dial .slider-row,.channel.dial .set-row > .target,.channel.dial > .ch-controls > div > div:first-child{display:none}
+.channel.dial .dial-wrap{display:flex}
+.dial{
+  position:relative;width:170px;height:170px;border-radius:50%;
+  background:radial-gradient(circle at 30% 25%,#161c27,#080b10 70%);
+  border:1px solid var(--line-2);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 12px 30px -16px rgba(0,0,0,.7);
+  touch-action:none;cursor:grab;
+}
+.dial:active{cursor:grabbing}
+.dial .track{position:absolute;inset:6px;border-radius:50%;border:1px dashed var(--line)}
+.dial .indicator{
+  position:absolute;left:50%;top:50%;width:3px;height:60px;margin-left:-1.5px;
+  background:linear-gradient(180deg,var(--accent),transparent 70%);
+  transform-origin:center top;transform:translateY(0) rotate(0deg);
+  border-radius:2px;pointer-events:none;
+}
+.dial .hub{
+  position:absolute;left:50%;top:50%;width:90px;height:90px;margin:-45px 0 0 -45px;
+  border-radius:50%;background:linear-gradient(180deg,#0e1218,#080b10);
+  border:1px solid var(--line);
+  display:grid;place-items:center;text-align:center;
+}
+.dial .hub .v{font-family:var(--mono);font-size:22px;color:var(--text);font-variant-numeric:tabular-nums}
+.dial .hub .u{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em}
+.dial .hint{position:absolute;bottom:-22px;left:0;right:0;text-align:center;font-size:11px;color:var(--muted);font-family:var(--mono)}
+
+/* Captive portal banner / view */
+.captive-banner{
+  display:flex;align-items:center;gap:10px;
+  padding:11px 14px;border-radius:10px;
+  background:linear-gradient(90deg,rgba(240,176,74,.1),rgba(240,176,74,.04));
+  border:1px solid #5a4520;color:#f0c98e;margin-bottom:16px;font-size:13px;
+}
+.captive-banner svg{flex-shrink:0;width:16px;height:16px}
+
+@media (max-width:700px){
+  .appbar{flex-wrap:wrap;padding:10px 12px}
+  .appbar nav{order:3;flex-basis:100%;margin-left:0;justify-content:center}
+  .page{padding:14px}
+  .readout .num{font-size:38px}
+}
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- ============================ LOGIN ============================= -->
+<section id="login-view" data-screen-label="01 Login">
+  <form class="login-card" id="login-form" autocomplete="off">
+    <div class="logo-lg">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+    </div>
+    <h1>Sign in</h1>
+    <p class="hint">Access the Voltbench control panel.</p>
+    <div class="err" id="login-err">Incorrect password.</div>
+    <label class="field">
+      <label>Username</label>
+      <input class="input" type="text" name="user" value="admin" autocomplete="username">
+    </label>
+    <label class="field">
+      <label>Password</label>
+      <input class="input" type="password" name="pass" placeholder="••••••••" autocomplete="current-password" required>
+    </label>
+    <button class="btn primary" style="width:100%" type="submit">Sign in</button>
+    <p class="hint" style="margin:14px 0 0;text-align:center">Default: <span class="kbd">admin</span> / <span class="kbd">admin</span></p>
+  </form>
+</section>
+
+<!-- ============================ APP ============================== -->
+<div class="app" id="app" style="display:none">
+  <header class="appbar">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+      </div>
+      <div class="name">Voltbench<span class="sub" id="brand-mdns">voltbench.local</span></div>
+    </div>
+    <nav>
+      <button data-tab="dashboard" class="active">Dashboard</button>
+      <button data-tab="history">History</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="statuspill ok" id="conn-pill">
+      <span class="dot"></span><span id="conn-text">Connected</span> · <code id="conn-ip">—</code>
+    </div>
+    <button class="icon-btn" id="logout-btn" title="Sign out" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 17l5-5-5-5M20 12H9M12 21H5a2 2 0 01-2-2V5a2 2 0 012-2h7"/></svg>
+    </button>
+  </header>
+
+  <!-- ====== DASHBOARD ====== -->
+  <section class="view active" id="dashboard-view" data-screen-label="02 Dashboard">
+    <div class="page">
+      <div id="captive-banner" class="captive-banner" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0114 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg>
+        <span><strong>Setup mode</strong> · No Wi-Fi configured. Go to <a href="#" onclick="document.querySelector('[data-tab=settings]').click();return false">Settings → Wi-Fi</a> to join your network.</span>
+      </div>
+      <div class="page-head">
+        <div>
+          <h2>Live outputs</h2>
+          <div class="sub">Measurements update at <span id="poll-rate">4&nbsp;Hz</span> · Last sample <code class="mono" id="last-sample">—</code></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn ghost" id="all-off-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 11-12.73 0M12 2v10"/></svg>
+            All off
+          </button>
+        </div>
+      </div>
+
+      <div class="channels" id="channels"></div>
+    </div>
+  </section>
+
+  <!-- ====== HISTORY ====== -->
+  <section class="view" id="history-view" data-screen-label="03 History">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>History</h2>
+          <div class="sub">Voltage trace with output state and configured set-points. Stored locally in your browser.</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn ghost" id="export-csv">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+            Export CSV
+          </button>
+          <button class="btn ghost" id="clear-hist">Clear</button>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <span class="label">Window</span>
+        <div class="seg" id="window-seg">
+          <button data-w="60000">1m</button>
+          <button data-w="300000" class="active">5m</button>
+          <button data-w="900000">15m</button>
+          <button data-w="3600000">1h</button>
+          <button data-w="0">All</button>
+        </div>
+        <span class="label" style="margin-left:8px">Channels</span>
+        <div class="seg" id="chan-seg">
+          <button data-c="all" class="active">All</button>
+          <button data-c="1">VAR</button>
+          <button data-c="2">5V</button>
+          <button data-c="3">3V3</button>
+        </div>
+        <div class="spacer"></div>
+        <span class="label" id="hist-stats">—</span>
+      </div>
+
+      <div class="graph-wrap">
+        <canvas id="graph"></canvas>
+        <div class="graph-legend">
+          <div class="legend-item" style="color:#3dd68c"><span class="swatch" style="background:currentColor"></span>VAR&nbsp;measured</div>
+          <div class="legend-item" style="color:#5ec6f0"><span class="swatch" style="background:currentColor"></span>5V&nbsp;measured</div>
+          <div class="legend-item" style="color:#a78bfa"><span class="swatch" style="background:currentColor"></span>3V3&nbsp;measured</div>
+          <div class="legend-item" style="color:#f0b04a"><span class="swatch dash" style="color:currentColor"></span>VAR&nbsp;set-point</div>
+          <div class="legend-item" style="color:#8895a8"><span class="swatch" style="background:currentColor;opacity:.35"></span>Output ON</div>
+        </div>
+      </div>
+
+      <div class="event-list">
+        <header>
+          <h3>Events</h3>
+          <span class="label" id="evt-count">0 events</span>
+        </header>
+        <div class="list" id="event-rows"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== SETTINGS ====== -->
+  <section class="view" id="settings-view" data-screen-label="04 Settings">
+    <div class="page">
+      <div class="page-head">
+        <div><h2>Settings</h2><div class="sub">Device identity, network, security, and firmware updates.</div></div>
+      </div>
+
+      <div class="settings-grid">
+
+        <!-- DEVICE -->
+        <div class="card">
+          <h3>Device</h3>
+          <p class="desc">mDNS hostname controls how the device is reachable on your LAN, e.g. <code class="mono" id="mdns-preview">voltbench</code>.local.</p>
+          <div class="field">
+            <label>mDNS hostname</label>
+            <div style="display:flex;gap:8px">
+              <input class="input" id="mdns-input" placeholder="voltbench" maxlength="32">
+              <button class="btn primary" id="save-mdns">Apply</button>
+            </div>
+            <p class="hint" style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Lowercase letters, digits and hyphens. Reboot required.</p>
+          </div>
+        </div>
+
+        <!-- CONNECTION -->
+        <div class="card">
+          <h3>Connection</h3>
+          <p class="desc">Current network details.</p>
+          <div class="row"><div class="k"><span class="lbl">SSID</span></div><span class="v" id="info-ssid">—</span></div>
+          <div class="row"><div class="k"><span class="lbl">IP address</span></div><span class="v" id="info-ip">—</span></div>
+          <div class="row"><div class="k"><span class="lbl">MAC</span></div><span class="v" id="info-mac">—</span></div>
+          <div class="row"><div class="k"><span class="lbl">Signal</span></div><span class="v" id="info-rssi">—</span></div>
+          <div class="row"><div class="k"><span class="lbl">Firmware</span></div><span class="v" id="info-fw">—</span></div>
+          <div class="row"><div class="k"><span class="lbl">Uptime</span></div><span class="v" id="info-uptime">—</span></div>
+        </div>
+
+        <!-- WIFI -->
+        <div class="card">
+          <h3>Wi-Fi</h3>
+          <p class="desc">Scan nearby networks and connect to a new one. Credentials are stored in non-volatile memory and reused on every boot.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn ghost" id="wifi-scan">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0114 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg>
+              <span id="wifi-scan-lbl">Scan</span>
+            </button>
+            <div class="label" id="wifi-scan-status" style="font-size:11.5px">Last scan: never</div>
+          </div>
+          <div class="ssid-list" id="ssid-list">
+            <div class="empty">Click <strong>Scan</strong> to look for networks.</div>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label>Password (leave empty for open / saved networks)</label>
+            <input class="input" id="wifi-pw" type="password" placeholder="••••••••">
+          </div>
+          <div class="row action">
+            <button class="btn" id="wifi-forget" disabled>Forget saved</button>
+            <button class="btn primary" id="wifi-connect" disabled>Connect</button>
+          </div>
+        </div>
+
+        <!-- SECURITY -->
+        <div class="card">
+          <h3>Security</h3>
+          <p class="desc">Require a password to access this control panel. Recommended on shared networks.</p>
+          <div class="row">
+            <div class="k"><span class="lbl">Require login</span><span class="sub">Show the sign-in page on every new session</span></div>
+            <label class="toggle"><input type="checkbox" id="opt-login"><span class="track"></span></label>
+          </div>
+          <div class="field" id="pw-fields" style="margin-top:12px">
+            <label>Change password</label>
+            <input class="input" type="password" id="pw-new" placeholder="New password (min 4 chars)">
+          </div>
+          <div class="row action">
+            <button class="btn primary" id="save-security">Save</button>
+          </div>
+        </div>
+
+        <!-- OTA -->
+        <div class="card" style="grid-column:span 2">
+          <h3>Firmware update (OTA)</h3>
+          <p class="desc">Pulls firmware over HTTPS from the configured base URL. Use <em>force push</em> to install regardless of version.</p>
+
+          <div class="field">
+            <label>OTA base URL</label>
+            <input class="input" id="ota-url" type="url" placeholder="https://example.com/firmware/">
+          </div>
+
+          <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:4px">
+            <label class="row" style="border:0;padding:6px 0;flex:1;min-width:240px">
+              <div class="k"><span class="lbl">Verify SSL certificate</span><span class="sub">Disable only if your host uses self-signed certs</span></div>
+              <span class="toggle"><input type="checkbox" id="ota-ssl" checked><span class="track"></span></span>
+            </label>
+            <label class="row" style="border:0;padding:6px 0;flex:1;min-width:240px">
+              <div class="k"><span class="lbl">Auto-check on boot</span><span class="sub">Compare <code class="mono">version.txt</code> at startup</span></div>
+              <span class="toggle"><input type="checkbox" id="ota-auto" checked><span class="track"></span></span>
+            </label>
+          </div>
+
+          <div class="banner danger" id="ota-warn" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01"/></svg>
+            SSL verification disabled — firmware integrity is not checked against a trusted CA.
+          </div>
+
+          <div class="progress" id="ota-progress"><div class="bar" id="ota-bar"></div></div>
+
+          <div class="row action">
+            <button class="btn ghost" id="ota-check">Check for updates</button>
+            <button class="btn" id="ota-update">Update if newer</button>
+            <button class="btn danger" id="ota-force">Force push</button>
+          </div>
+        </div>
+
+        <!-- EXPERIMENTAL -->
+        <div class="card" style="grid-column:span 2">
+          <h3>Experimental</h3>
+          <p class="desc">Features that aren't fully baked. Toggle at your own risk.</p>
+          <div class="row">
+            <div class="k">
+              <span class="lbl">Current monitoring</span>
+              <span class="sub">Show per-channel current draw when shunt sensor is fitted. Requires hardware mod.</span>
+            </div>
+            <label class="toggle"><input type="checkbox" id="opt-current"><span class="track"></span></label>
+          </div>
+          <div class="row">
+            <div class="k">
+              <span class="lbl">Fast sampling (250 ms)</span>
+              <span class="sub">Higher cadence ADC reads. Slightly more CPU on the controller.</span>
+            </div>
+            <label class="toggle"><input type="checkbox" id="opt-fast" checked><span class="track"></span></label>
+          </div>
+          <div class="row">
+            <div class="k">
+              <span class="lbl">Voltage smoothing</span>
+              <span class="sub">EMA filter on the readout for a calmer number.</span>
+            </div>
+            <label class="toggle"><input type="checkbox" id="opt-smooth"><span class="track"></span></label>
+          </div>
+          <div class="row">
+            <div class="k">
+              <span class="lbl">Rotary dial input</span>
+              <span class="sub">Drag-to-set knob on the variable channel. Hold <span class="kbd">Shift</span> for fine 10 mV steps.</span>
+            </div>
+            <label class="toggle"><input type="checkbox" id="opt-dial"><span class="track"></span></label>
+          </div>
+          <div class="row action">
+            <button class="btn danger" id="reboot-btn">Reboot device</button>
+            <button class="btn" id="factory-btn">Factory reset</button>
+          </div>
+        </div>
+        <!-- SAFETY GUARDS -->
+        <div class="card">
+          <h3>Safety guards</h3>
+          <p class="desc">Automatically cut a channel when it draws too much current or the regulator gets too hot. Trips appear in the event log.</p>
+          <div class="row">
+            <div class="k"><span class="lbl">Over-current shutoff</span><span class="sub">Per-channel limit set on each card</span></div>
+            <label class="toggle"><input type="checkbox" id="ocp-en" checked><span class="track"></span></label>
+          </div>
+          <div class="row">
+            <div class="k"><span class="lbl">Over-temperature shutoff</span><span class="sub">Latches if NTC exceeds threshold</span></div>
+            <label class="toggle"><input type="checkbox" id="otp-en" checked><span class="track"></span></label>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label>Over-temp threshold (°C)</label>
+            <input class="input" type="number" id="otp-temp" value="85" min="40" max="120">
+          </div>
+          <div class="row">
+            <div class="k"><span class="lbl">Auto-recover after trip</span><span class="sub">Retry once after 5 seconds before latching</span></div>
+            <label class="toggle"><input type="checkbox" id="guard-recover"><span class="track"></span></label>
+          </div>
+          <div class="row action">
+            <button class="btn primary" id="save-guard">Save</button>
+          </div>
+        </div>
+
+        <!-- WEBSOCKET API HELP -->
+        <div class="card" style="grid-column:span 2">
+          <h3>WebSocket API</h3>
+          <p class="desc">Direct real-time control — useful for automation scripts, Python notebooks, or custom dashboards. No auth header needed if you include the token in the message body.</p>
+
+          <div class="row" style="flex-wrap:wrap;gap:4px">
+            <div class="k"><span class="lbl">Endpoint</span></div>
+            <code class="mono" id="ws-url" style="font-size:12px;color:var(--accent)">ws://voltbench.local/ws</code>
+          </div>
+
+          <div class="field" style="margin-top:12px">
+            <label>Server push format (250 ms or 1 s)</label>
+            <pre style="background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;margin:4px 0 0;line-height:1.6;white-space:pre-wrap">{"output1":true,"output2":false,"output3":false,
+"voltage1":4.998,"voltage2":5.012,"voltage3":3.303,
+"set1":5.000,"current1":0.082,"trip1":false,"trip2":false,"trip3":false,"ts":12345}</pre>
+          </div>
+
+          <div class="field" style="margin-top:12px">
+            <label>Client commands (send JSON text frame)</label>
+            <pre style="background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;margin:4px 0 0;line-height:1.6;white-space:pre-wrap">// Toggle output  (output 1-3, value true/false)
+{"action":"toggle","output":1,"value":true,"token":"YOUR_TOKEN"}
+
+// Set variable voltage  (volts, channel 1 only)
+{"action":"set_voltage","output":1,"value":5.0,"token":"YOUR_TOKEN"}
+
+// Set current limit  (amps, output 1-3)
+{"action":"set_ilimit","output":1,"value":1.5,"token":"YOUR_TOKEN"}
+
+// All outputs off / clear trips
+{"action":"all_off","token":"YOUR_TOKEN"}
+{"action":"clear_trip","token":"YOUR_TOKEN"}</pre>
+          </div>
+
+          <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">
+            <div class="k"><span class="lbl">Your auth token</span><span class="sub">Include as "token" field in every command when login is on</span></div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <code class="mono" id="ws-token" style="font-size:11.5px;color:var(--muted)">—</code>
+              <button class="btn ghost" style="padding:3px 10px;font-size:11px" id="copy-ws-token">Copy</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- MQTT -->
+        <div class="card">
+          <h3>MQTT bridge</h3>
+          <p class="desc">Publish telemetry and accept commands over MQTT — useful for Home Assistant or a lab dashboard.</p>
+          <div class="row">
+            <div class="k"><span class="lbl">Enable MQTT</span><span class="sub">Topic prefix below; auto-reconnects</span></div>
+            <label class="toggle"><input type="checkbox" id="mqtt-en"><span class="track"></span></label>
+          </div>
+          <div class="field"><label>Broker host</label><input class="input" id="mqtt-host" placeholder="192.168.1.10"></div>
+          <div style="display:flex;gap:8px">
+            <div class="field" style="flex:1"><label>Port</label><input class="input" id="mqtt-port" type="number" value="1883"></div>
+            <div class="field" style="flex:1"><label>Username</label><input class="input" id="mqtt-user" placeholder="optional"></div>
+          </div>
+          <div class="field"><label>Password</label><input class="input" type="password" id="mqtt-pass" placeholder="optional"></div>
+          <div class="field"><label>Topic prefix</label><input class="input" id="mqtt-topic" value="voltbench"></div>
+          <div class="row action">
+            <button class="btn ghost" id="mqtt-test">Test</button>
+            <button class="btn primary" id="save-mqtt">Save</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="toast-host" id="toasts"></div>
+
+<script>
+/* =====================================================================
+   Voltbench — client app
+   All endpoints are namespaced under /api/. A demo backend is bundled
+   so the page works standalone without a device.
+===================================================================== */
+
+(() => {
+
+/* ---------- Demo backend (only used when /api/* returns 404) -------- */
+const demo = (() => {
+  const state = {
+    fw: "0.1.0",
+    mdns: "voltbench",
+    ip: "192.168.1.78",
+    mac: "A4:CF:12:9F:3B:E2",
+    ssid: "lab-network",
+    rssi: -54,
+    bootMs: Date.now(),
+    captive: false,
+    require_login: true,
+    password: "admin",
+    ota_url: "https://updates.example.com/voltbench/",
+    ota_ssl: true,
+    ota_auto: true,
+    fast: true,
+    smooth: false,
+    current_enabled: false,
+    dial: false,
+    guard: {ocp:true, otp:true, otp_temp:85, recover:false},
+    mqtt: {enabled:false, host:"", port:1883, user:"", topic:"voltbench"},
+    output1: false, output2: false, output3: false,
+    voltage1: 5.00, set1: 5.00,
+    ilim1: 1.0, ilim2: 1.5, ilim3: 1.0,
+    measured1: 0, measured2: 0, measured3: 0,
+    current1: 0, current2: 0, current3: 0,
+    trip1: false, trip2: false, trip3: false,
+    savedSSIDs: ["lab-network", "home-2.4G"]
+  };
+  // Drift simulation
+  setInterval(()=>{
+    const noise = ()=> (Math.random()-.5)*0.012;
+    state.measured1 = state.output1 ? Math.max(0, state.set1 + noise()) : 0 + noise()*0.2;
+    state.measured2 = state.output2 ? 5.00 + noise() : 0;
+    state.measured3 = state.output3 ? 3.30 + noise() : 0;
+    state.current1  = state.output1 ? 0.082 + Math.random()*0.04 : 0;
+    state.current2  = state.output2 ? 0.140 + Math.random()*0.06 : 0;
+    state.current3  = state.output3 ? 0.045 + Math.random()*0.02 : 0;
+  }, 120);
+
+  return async (path, opts={}) => {
+    const url = new URL(path, "http://demo");
+    const p = url.pathname;
+    const params = url.searchParams;
+    // Decode body: URLSearchParams, form-encoded string, or JSON string
+    let body = {};
+    if (opts.body) {
+      if (opts.body instanceof URLSearchParams) body = Object.fromEntries(opts.body);
+      else if (typeof opts.body === "string") {
+        const t = opts.body.trim();
+        if (t.startsWith("{")) { try { body = JSON.parse(t); } catch(_){} }
+        else body = Object.fromEntries(new URLSearchParams(t));
+      }
+    }
+    await new Promise(r=>setTimeout(r, 40 + Math.random()*80));
+
+    if (p === "/api/status") {
+      return {
+        output1:state.output1, output2:state.output2, output3:state.output3,
+        voltage1:+state.measured1.toFixed(3),
+        voltage2:+state.measured2.toFixed(3),
+        voltage3:+state.measured3.toFixed(3),
+        current1:+state.current1.toFixed(3),
+        current2:+state.current2.toFixed(3),
+        current3:+state.current3.toFixed(3),
+        cc1: state.current1 > state.ilim1 * 0.95,
+        cc2: state.current2 > state.ilim2 * 0.95,
+        cc3: state.current3 > state.ilim3 * 0.95,
+        trip1: state.trip1, trip2: state.trip2, trip3: state.trip3,
+        set1:state.set1,
+        ts: Date.now(),
+      };
+    }
+    if (p === "/api/info") {
+      return {
+        fw:state.fw, mdns:state.mdns, ip:state.ip, mac:state.mac,
+        ssid:state.ssid, rssi:state.rssi,
+        uptime: Math.floor((Date.now()-state.bootMs)/1000),
+        require_login:state.require_login,
+        captive: state.captive,
+        ota:{url:state.ota_url, ssl:state.ota_ssl, auto:state.ota_auto},
+        exp:{current:state.current_enabled, fast:state.fast, smooth:state.smooth, dial:state.dial},
+        guard: state.guard,
+        mqtt: state.mqtt,
+        saved_ssids: state.savedSSIDs
+      };
+    }
+    if (p === "/api/control" && opts.method==="POST") {
+      if (body.action === "toggle") {
+        const n = +body.output;
+        const on = body.value === "1";
+        state["output"+n] = on;
+      } else if (body.action === "set_voltage") {
+        state.set1 = +body.value;
+        state.voltage1 = state.set1;
+      } else if (body.action === "set_ilimit") {
+        state["ilim"+(+body.output)] = +body.value;
+      } else if (body.action === "all_off") {
+        state.output1 = state.output2 = state.output3 = false;
+      } else if (body.action === "clear_trip") {
+        state.trip1 = state.trip2 = state.trip3 = false;
+      }
+      return {ok:true};
+    }
+    if (p === "/api/login" && opts.method==="POST") {
+      if (!state.require_login) return {ok:true, token:"demo-token"};
+      return body.pass === state.password ? {ok:true, token:"demo-token-"+Math.random().toString(36).slice(2,10)} : {ok:false, err:"bad-pass"};
+    }
+    if (p === "/api/settings" && opts.method==="POST") {
+      const s = body;
+      if (s.mdns) state.mdns = s.mdns;
+      if (typeof s.require_login === "boolean") state.require_login = s.require_login;
+      if (s.password) state.password = s.password;
+      if (s.ota) Object.assign(state, {ota_url:s.ota.url ?? state.ota_url, ota_ssl:s.ota.ssl ?? state.ota_ssl, ota_auto:s.ota.auto ?? state.ota_auto});
+      if (s.exp) Object.assign(state, {current_enabled:s.exp.current ?? state.current_enabled, fast:s.exp.fast ?? state.fast, smooth:s.exp.smooth ?? state.smooth, dial:s.exp.dial ?? state.dial});
+      if (s.guard) state.guard = {...state.guard, ...s.guard};
+      if (s.mqtt) state.mqtt = {...state.mqtt, ...s.mqtt};
+      return {ok:true};
+    }
+    if (p === "/api/mqtt/test") {
+      return state.mqtt.host ? {ok:true} : {ok:false, err:"no broker host configured"};
+    }
+    if (p === "/api/wifi/scan") {
+      const nets = [
+        {ssid:"lab-network",    rssi:-54, sec:"WPA2"},
+        {ssid:"home-2.4G",      rssi:-67, sec:"WPA2"},
+        {ssid:"workshop-mesh",  rssi:-72, sec:"WPA2"},
+        {ssid:"GuestWiFi",      rssi:-79, sec:"open"},
+        {ssid:"AndroidAP_7831", rssi:-83, sec:"WPA2"},
+      ];
+      return {networks:nets};
+    }
+    if (p === "/api/wifi/connect" && opts.method==="POST") {
+      state.ssid = body.ssid;
+      if (!state.savedSSIDs.includes(body.ssid)) state.savedSSIDs.push(body.ssid);
+      return {ok:true};
+    }
+    if (p === "/api/wifi/forget" && opts.method==="POST") {
+      state.savedSSIDs = state.savedSSIDs.filter(s=>s!==body.ssid);
+      return {ok:true};
+    }
+    if (p === "/api/ota/check") {
+      return {current:state.fw, latest:"0.0.3", newer:true};
+    }
+    if (p === "/api/ota/update" || p === "/api/ota/force") {
+      return {ok:true, started:true};
+    }
+    if (p === "/api/reboot") return {ok:true};
+    if (p === "/api/factory_reset" && opts.method==="POST") {
+      localStorage.removeItem("ps_hist");
+      localStorage.removeItem("ps_evts");
+      return {ok:true};
+    }
+    return {error:"unknown"};
+  };
+})();
+
+async function api(path, opts={}){
+  const headers = opts.headers || {};
+  const tok = sessionStorage.getItem("ps_token");
+  if (tok) headers["X-Auth"] = tok;
+  try {
+    const r = await fetch(path, {...opts, headers});
+    if (r.status === 401){ sessionStorage.removeItem("ps_authed"); sessionStorage.removeItem("ps_token"); location.reload(); throw new Error("auth"); }
+    if (r.status === 404) return demo(path, opts);
+    return await r.json();
+  } catch(e){
+    return demo(path, opts);
+  }
+}
+
+/* ---------- WebSocket (optional, falls back to polling) ----------- */
+let ws = null, wsAlive = false, wsTries = 0;
+function connectWS(){
+  if (!("WebSocket" in window)) return;
+  if (!location.host || location.protocol === "file:") return;  // standalone demo
+  if (wsTries > 5) return;  // give up; polling is fine
+  wsTries++;
+  try {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(proto + "//" + location.host + "/ws");
+  } catch(e){ return; }
+  const timeout = setTimeout(()=>{ try{ ws.close(); }catch(_){}}, 1500);
+  ws.addEventListener("open", ()=>{ clearTimeout(timeout); wsAlive = true; wsTries = 0; if (pollTimer){clearInterval(pollTimer); pollTimer=null;} });
+  ws.addEventListener("message", ev => {
+    try {
+      const s = JSON.parse(ev.data);
+      if (s.ts) onStatus(s);
+    } catch(_){}
+  });
+  ws.addEventListener("close", ()=>{ wsAlive = false; ws = null; setTimeout(connectWS, 5000); if (!pollTimer) startPolling(); });
+  ws.addEventListener("error", ()=>{ try{ ws.close(); }catch(_){}});
+}
+
+/* ---------- Tiny utilities ----------------------------------------- */
+const $  = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+
+function toast(ttl, msg, kind="ok"){
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.innerHTML = `<div class="dot"></div><div class="body"><div class="ttl"></div><div class="msg"></div></div>`;
+  el.querySelector(".ttl").textContent = ttl;
+  el.querySelector(".msg").textContent = msg || "";
+  $("#toasts").appendChild(el);
+  setTimeout(()=>{el.style.transition="opacity .25s, transform .25s";el.style.opacity=0;el.style.transform="translateY(4px)";},3200);
+  setTimeout(()=>el.remove(),3600);
+}
+
+function fmtUptime(s){
+  const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60), sec=s%60;
+  if (d) return `${d}d ${h}h ${m}m`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+function fmtTime(ms){
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+}
+
+/* ---------- State -------------------------------------------------- */
+const channels = [
+  { n:1, key:"variable", title:"Variable Output", pin:"GPIO 5",  min:2.5, max:19.0, step:0.1, hasSlider:true,  color:"#3dd68c" },
+  { n:2, key:"fixed5",   title:"5 V Output",      pin:"GPIO 6",  fixed:5.00,  color:"#5ec6f0" },
+  { n:3, key:"fixed3v3", title:"3.3 V Output",    pin:"GPIO 7",  fixed:3.30,  color:"#a78bfa" },
+];
+
+let info = null;
+let lastStatus = null;
+let pollTimer = null;
+let pollRate = 250;
+
+/* ---------- History (localStorage) -------------------------------- */
+const HIST_KEY = "ps_hist";   // [{t, v1, v2, v3, o1, o2, o3, s1}]
+const EVT_KEY  = "ps_evts";   // [{t, type, ch, value, label}]
+const HIST_MAX = 4000;
+const EVT_MAX  = 500;
+
+let hist = JSON.parse(localStorage.getItem(HIST_KEY) || "[]");
+let evts = JSON.parse(localStorage.getItem(EVT_KEY)  || "[]");
+
+let saveHistTimer = null;
+function pushHist(s){
+  hist.push({t:s.ts, v1:s.voltage1, v2:s.voltage2, v3:s.voltage3, o1:s.output1, o2:s.output2, o3:s.output3, s1:s.set1});
+  if (hist.length > HIST_MAX) hist.splice(0, hist.length - HIST_MAX);
+  if (saveHistTimer) clearTimeout(saveHistTimer);
+  saveHistTimer = setTimeout(()=>localStorage.setItem(HIST_KEY, JSON.stringify(hist)), 1200);
+}
+function pushEvt(type, ch, value, label){
+  const e = {t: Date.now(), type, ch, value, label};
+  evts.push(e);
+  if (evts.length > EVT_MAX) evts.splice(0, evts.length - EVT_MAX);
+  localStorage.setItem(EVT_KEY, JSON.stringify(evts));
+  renderEvents();
+  drawGraph();
+}
+
+/* ---------- EMA voltage smoothing (enabled via exp.smooth) -------- */
+const emaState = {};
+function emaFilter(ch, v){
+  if (!info?.exp?.smooth) return v;
+  if (emaState[ch] === undefined) emaState[ch] = v;
+  emaState[ch] = 0.2 * v + 0.8 * emaState[ch];
+  return emaState[ch];
+}
+
+/* ---------- Render channels --------------------------------------- */
+function renderChannels(){
+  const root = $("#channels");
+  root.innerHTML = "";
+  for (const c of channels){
+    const el = document.createElement("div");
+    el.className = "channel";
+    el.dataset.ch = c.n;
+    el.innerHTML = `
+      <div class="ch-head">
+        <div>
+          <div class="ch-tag"><span>CH${c.n}</span><span class="pin">${c.pin}</span></div>
+          <div class="ch-title">${c.title}</div>
+        </div>
+        <div class="ch-state"><span class="led"></span><span class="state-text">OFF</span></div>
+      </div>
+
+      <div class="readout">
+        <span class="num" data-meas>0.000</span>
+        <span class="unit">V</span>
+        <span class="delta" data-delta></span>
+      </div>
+
+      <div class="current-row" data-current>
+        <span class="lbl">Current</span>
+        <span class="val" data-i>0.000</span>
+        <span class="u">A</span>
+        <span class="exp">EXPERIMENTAL</span>
+      </div>
+
+      <div class="ilimit-row" data-ilimit>
+        <span class="lbl">Limit</span>
+        <div class="field-mini">
+          <input type="number" step="0.05" min="0.05" max="3" value="1.00" data-ilim>
+          <span class="u">A</span>
+        </div>
+        <span class="pill cv" data-mode>CV</span>
+      </div>
+
+      <div class="ch-controls">
+        ${c.hasSlider ? `
+        <div>
+          <div class="slider-row">
+            <span class="min">${c.min.toFixed(2)}V</span>
+            <input class="slider" type="range" min="${c.min}" max="${c.max}" step="${c.step}" value="${c.min}" data-slider>
+            <span class="max">${c.max.toFixed(1)}V</span>
+          </div>
+          <div class="set-row" style="margin-top:10px">
+            <div class="target">
+              <input type="number" step="0.01" min="${c.min}" max="${c.max}" value="${c.min.toFixed(2)}" data-target>
+              <span class="u">V</span>
+            </div>
+            <button class="btn primary apply" data-apply>Set</button>
+          </div>
+          <div class="dial-wrap">
+            <div class="dial" data-dial>
+              <div class="track"></div>
+              <div class="indicator" data-needle></div>
+              <div class="hub"><div><div class="v" data-dial-v>0.00</div><div class="u">VOLTS</div></div></div>
+              <div class="hint">drag · shift = fine</div>
+            </div>
+          </div>
+          <div class="presets" data-presets></div>
+        </div>` : `
+        <div style="display:flex;align-items:baseline;gap:8px;padding:2px 4px">
+          <span class="lbl" style="font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase">Fixed</span>
+          <span style="font-family:var(--mono);font-size:18px;color:var(--text)">${c.fixed.toFixed(2)}&nbsp;V</span>
+        </div>`}
+
+        <div class="power-row">
+          <div class="lbl">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 11-12.73 0M12 2v10"/></svg>
+            Output
+          </div>
+          <label class="toggle"><input type="checkbox" data-toggle><span class="track"></span></label>
+        </div>
+      </div>
+    `;
+    root.appendChild(el);
+
+    // wiring
+    const tog = el.querySelector("[data-toggle]");
+    tog.addEventListener("change", async ()=>{
+      await api("/api/control", {method:"POST", body:new URLSearchParams({action:"toggle", output:c.n, value: tog.checked?1:0})});
+      pushEvt(tog.checked?"on":"off", c.n, null, c.title);
+      pull();
+    });
+
+    if (c.hasSlider){
+      const slider = el.querySelector("[data-slider]");
+      const target = el.querySelector("[data-target]");
+      const apply = el.querySelector("[data-apply]");
+      slider.addEventListener("input", ()=> target.value = (+slider.value).toFixed(2));
+      target.addEventListener("input", ()=> slider.value = +target.value);
+      const submit = async ()=>{
+        const v = Math.min(c.max, Math.max(c.min, +target.value || c.min));
+        target.value = v.toFixed(2);
+        slider.value = v;
+        await api("/api/control", {method:"POST", body:new URLSearchParams({action:"set_voltage", output:c.n, value:v})});
+        pushEvt("set", c.n, v, `set ${v.toFixed(2)} V`);
+        pull();
+      };
+      apply.addEventListener("click", submit);
+      target.addEventListener("keydown", e=>{ if (e.key==="Enter") submit(); });
+
+      // Presets
+      renderPresets(el, c, submit);
+
+      // Dial input
+      const dial = el.querySelector("[data-dial]");
+      const needle = el.querySelector("[data-needle]");
+      const dialV = el.querySelector("[data-dial-v]");
+      const range = c.max - c.min;
+      const setFromAngle = (deg, fine) => {
+        // -135..+135 maps to min..max (270 deg sweep)
+        const clamped = Math.max(-135, Math.min(135, deg));
+        let v = c.min + ((clamped + 135) / 270) * range;
+        v = Math.round(v / (fine ? 0.01 : 0.05)) * (fine ? 0.01 : 0.05);
+        v = Math.max(c.min, Math.min(c.max, v));
+        target.value = v.toFixed(2);
+        slider.value = v;
+        dialV.textContent = v.toFixed(2);
+        needle.style.transform = `translateX(-50%) rotate(${clamped+180}deg)`;
+        needle.style.transformOrigin = "center top";
+      };
+      let dragging = false;
+      const onMove = e => {
+        if (!dragging) return;
+        const r = dial.getBoundingClientRect();
+        const cx = r.left + r.width/2, cy = r.top + r.height/2;
+        const pt = e.touches ? e.touches[0] : e;
+        const dx = pt.clientX - cx, dy = pt.clientY - cy;
+        const deg = Math.atan2(dx, -dy) * 180/Math.PI;  // 0 = up
+        setFromAngle(deg, e.shiftKey);
+      };
+      dial.addEventListener("pointerdown", e=>{ dragging = true; dial.setPointerCapture(e.pointerId); onMove(e); });
+      dial.addEventListener("pointermove", onMove);
+      dial.addEventListener("pointerup",   async e=>{
+        if (!dragging) return; dragging = false;
+        await submit();
+      });
+
+      // Current limit
+      const ilim = el.querySelector("[data-ilim]");
+      ilim.addEventListener("change", async ()=>{
+        const v = Math.max(0.05, Math.min(3, +ilim.value || 1));
+        ilim.value = v.toFixed(2);
+        await api("/api/control", {method:"POST", body:new URLSearchParams({action:"set_ilimit", output:c.n, value:v})});
+        pushEvt("set", c.n, v, `I limit ${v.toFixed(2)} A`);
+      });
+    } else {
+      // Fixed channels: current limit input only
+      const ilim = el.querySelector("[data-ilim]");
+      if (ilim){
+        ilim.addEventListener("change", async ()=>{
+          const v = Math.max(0.05, Math.min(3, +ilim.value || 1));
+          ilim.value = v.toFixed(2);
+          await api("/api/control", {method:"POST", body:new URLSearchParams({action:"set_ilimit", output:c.n, value:v})});
+        });
+      }
+    }
+  }
+}
+
+function paintChannels(s){
+  if (!s) return;
+  for (const c of channels){
+    const el = $(`.channel[data-ch="${c.n}"]`); if (!el) continue;
+    const on = s["output"+c.n];
+    el.classList.toggle("on", on);
+    el.querySelector(".state-text").textContent = on ? "ON" : "OFF";
+    const meas = el.querySelector("[data-meas]");
+    const v = emaFilter(c.n, s["voltage"+c.n] || 0);
+    meas.textContent = v.toFixed(3);
+
+    if (c.hasSlider){
+      const set = s.set1 || 0;
+      const delta = el.querySelector("[data-delta]");
+      const diff = v - set;
+      if (on && Math.abs(diff) > 0.05){
+        delta.textContent = `Δ ${diff>=0?"+":""}${diff.toFixed(2)} V vs set`;
+        delta.classList.toggle("warn", Math.abs(diff) > 0.1);
+      } else { delta.textContent = on ? "tracking set-point" : ""; delta.classList.remove("warn"); }
+      // dial needle reflects set-point
+      const needle = el.querySelector("[data-needle]");
+      const dialV = el.querySelector("[data-dial-v]");
+      if (needle && document.activeElement !== el.querySelector("[data-dial]")){
+        const range = c.max - c.min;
+        const deg = -135 + ((set - c.min)/range) * 270;
+        needle.style.transform = `translateX(-50%) rotate(${deg+180}deg)`;
+        dialV.textContent = set.toFixed(2);
+      }
+    }
+
+    const showI = !!info?.exp?.current;
+    const cur = el.querySelector("[data-current]");
+    const ilim = el.querySelector("[data-ilimit]");
+    if (showI){
+      cur.classList.add("show");
+      ilim.classList.add("show");
+      cur.querySelector("[data-i]").textContent = (s["current"+c.n]||0).toFixed(3);
+      // CV/CC/Tripped pill
+      const mode = el.querySelector("[data-mode]");
+      const trip = s["trip"+c.n];
+      if (trip){ mode.textContent = "TRIPPED"; mode.className = "pill tripped"; }
+      else if (s["cc"+c.n]){ mode.textContent = "CC"; mode.className = "pill cc"; }
+      else { mode.textContent = "CV"; mode.className = "pill cv"; }
+    } else {
+      cur.classList.remove("show");
+      ilim.classList.remove("show");
+    }
+  }
+  $("#last-sample").textContent = fmtTime(s.ts);
+}
+
+function renderPresets(el, c, applyFn){
+  const wrap = el.querySelector("[data-presets]");
+  if (!wrap) return;
+  const KEY = "ps_presets_ch"+c.n;
+  let presets = JSON.parse(localStorage.getItem(KEY) || "null") || [3.3, 5.0, 9.0, 12.0, 15.0];
+  const slider = el.querySelector("[data-slider]");
+  const target = el.querySelector("[data-target]");
+  const render = ()=>{
+    wrap.innerHTML = presets.map(v => `<button class="chip" data-v="${v}">${(+v).toFixed(2)} V</button>`).join("")
+      + `<button class="chip add" data-add title="Save current as preset">＋</button>`;
+    wrap.querySelectorAll(".chip[data-v]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        target.value = (+b.dataset.v).toFixed(2);
+        slider.value = +b.dataset.v;
+        applyFn();
+      });
+      b.addEventListener("contextmenu", e=>{
+        e.preventDefault();
+        if (!confirm(`Remove preset ${(+b.dataset.v).toFixed(2)} V?`)) return;
+        presets = presets.filter(v=>+v !== +b.dataset.v);
+        localStorage.setItem(KEY, JSON.stringify(presets));
+        render();
+      });
+    });
+    wrap.querySelector("[data-add]").addEventListener("click", ()=>{
+      const v = +target.value;
+      if (!presets.includes(v)){ presets.push(v); presets.sort((a,b)=>a-b); localStorage.setItem(KEY, JSON.stringify(presets)); render(); }
+    });
+  };
+  render();
+}
+
+function syncChannelControls(s){
+  // only update slider/target if user not currently editing
+  const ch1 = $(`.channel[data-ch="1"]`);
+  if (!ch1) return;
+  const slider = ch1.querySelector("[data-slider]");
+  const target = ch1.querySelector("[data-target]");
+  if (slider && document.activeElement !== slider && document.activeElement !== target){
+    slider.value = s.set1;
+    target.value = s.set1.toFixed(2);
+  }
+  const tog = ch1.querySelector("[data-toggle]");
+  if (tog && document.activeElement !== tog) tog.checked = s.output1;
+  const t2 = $(`.channel[data-ch="2"] [data-toggle]`); if (t2 && document.activeElement !== t2) t2.checked = s.output2;
+  const t3 = $(`.channel[data-ch="3"] [data-toggle]`); if (t3 && document.activeElement !== t3) t3.checked = s.output3;
+}
+
+/* ---------- Polling ----------------------------------------------- */
+function onStatus(s){
+  lastStatus = s;
+  paintChannels(s);
+  syncChannelControls(s);
+  pushHist(s);
+  if ($("#history-view").classList.contains("active")) drawGraph();
+  $("#conn-pill").classList.remove("err","warn");
+  $("#conn-pill").classList.add("ok");
+  $("#conn-text").textContent = wsAlive ? "Live" : "Connected";
+}
+
+async function pull(){
+  try{
+    const s = await api("/api/status");
+    if (!s || s.error) return;
+    onStatus(s);
+  } catch(e){
+    $("#conn-pill").classList.remove("ok","warn"); $("#conn-pill").classList.add("err");
+    $("#conn-text").textContent = "Offline";
+  }
+}
+function startPolling(){
+  pollRate = info?.exp?.fast ? 250 : 1000;
+  $("#poll-rate").innerHTML = (1000/pollRate).toFixed(pollRate<500?1:0) + "&nbsp;Hz";
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(pull, pollRate);
+}
+
+/* ---------- Graph (canvas) ---------------------------------------- */
+const canvas = $("#graph");
+const ctx = canvas.getContext("2d");
+let windowMs = 5*60*1000;
+let chanFilter = "all";
+
+function fitCanvas(){
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = Math.floor(rect.width * dpr);
+  canvas.height = Math.floor(rect.height * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener("resize", ()=>{ fitCanvas(); drawGraph(); });
+
+function drawGraph(){
+  if (!canvas.offsetWidth) return;
+  fitCanvas();
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const padL = 50, padR = 16, padT = 16, padB = 26;
+  const plotW = W-padL-padR, plotH = H-padT-padB;
+  ctx.clearRect(0,0,W,H);
+
+  // determine time window
+  const now = Date.now();
+  const tEnd = now;
+  let tStart;
+  let data = hist;
+  if (!windowMs){
+    tStart = data.length ? data[0].t : now-60000;
+  } else {
+    tStart = now - windowMs;
+    data = hist.filter(d => d.t >= tStart);
+  }
+  if (data.length < 2) data = hist.slice(-2);
+
+  // Y range
+  const showChans = chanFilter==="all" ? [1,2,3] : [+chanFilter];
+  let yMin = 0, yMax = 5;
+  for (const d of data){
+    for (const c of showChans){
+      yMax = Math.max(yMax, d["v"+c] || 0);
+      if (c===1) yMax = Math.max(yMax, d.s1 || 0);
+    }
+  }
+  yMax = Math.ceil(yMax + 0.5);
+  // grid
+  ctx.font = "11px JetBrains Mono, monospace";
+  ctx.fillStyle = "#54607a";
+  ctx.strokeStyle = "#1a2030";
+  ctx.lineWidth = 1;
+  const ySteps = 5;
+  for (let i=0;i<=ySteps;i++){
+    const y = padT + (plotH * i/ySteps);
+    ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(W-padR,y);ctx.stroke();
+    const val = yMax - (yMax-yMin)*(i/ySteps);
+    ctx.fillText(val.toFixed(1)+" V", 6, y+3);
+  }
+  // x ticks
+  const ticks = 6;
+  for (let i=0;i<=ticks;i++){
+    const x = padL + plotW * i/ticks;
+    if (i>0 && i<ticks){
+      ctx.beginPath();ctx.moveTo(x,padT);ctx.lineTo(x,padT+plotH);ctx.strokeStyle="#11161f";ctx.stroke();
+    }
+    const t = tStart + (tEnd-tStart) * i/ticks;
+    const label = (windowMs>0 && windowMs<=3600000)
+      ? new Date(t).toLocaleTimeString([], {minute:"2-digit",second:"2-digit"})
+      : new Date(t).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+    ctx.fillStyle="#54607a";
+    ctx.fillText(label, x-18, H-8);
+  }
+
+  const x = t => padL + (t-tStart)/(tEnd-tStart) * plotW;
+  const y = v => padT + (1 - (v-yMin)/(yMax-yMin)) * plotH;
+
+  // ON-state shaded strips (per channel, stacked at bottom band)
+  const bandH = 6;
+  for (let i=0;i<showChans.length;i++){
+    const c = showChans[i];
+    const bandY = padT + plotH - bandH*(showChans.length - i) - 2;
+    const col = chanColor(c);
+    ctx.fillStyle = col + "33";
+    let inRun = false, runStart = 0;
+    for (let j=0;j<data.length;j++){
+      const on = data[j]["o"+c];
+      if (on && !inRun){ inRun = true; runStart = data[j].t; }
+      if ((!on || j===data.length-1) && inRun){
+        const x0 = x(runStart), x1 = x(data[j].t);
+        ctx.fillRect(x0, bandY, Math.max(1,x1-x0), bandH-1);
+        inRun = false;
+      }
+    }
+  }
+
+  // VAR set-point trace (dashed amber, stepped)
+  if (showChans.includes(1)){
+    ctx.setLineDash([5,4]);
+    ctx.strokeStyle = "#f0b04a";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started=false;
+    for (let i=0;i<data.length;i++){
+      const px=x(data[i].t), py=y(data[i].s1||0);
+      if (!started){ ctx.moveTo(px,py); started=true; }
+      else {
+        const prev=data[i-1];
+        ctx.lineTo(x(data[i].t), y(prev.s1||0));
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Measurement traces
+  for (const c of showChans){
+    ctx.strokeStyle = chanColor(c);
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    let started=false;
+    for (let i=0;i<data.length;i++){
+      const v = data[i]["v"+c] || 0;
+      const px = x(data[i].t), py = y(v);
+      if (!started){ ctx.moveTo(px,py); started=true; }
+      else ctx.lineTo(px,py);
+    }
+    ctx.stroke();
+
+    // fill below trace
+    ctx.lineTo(x(data[data.length-1].t), padT+plotH);
+    ctx.lineTo(x(data[0].t), padT+plotH);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0,padT,0,padT+plotH);
+    grad.addColorStop(0, chanColor(c)+"33");
+    grad.addColorStop(1, chanColor(c)+"00");
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+
+  // Event markers
+  ctx.font = "10px JetBrains Mono, monospace";
+  for (const e of evts){
+    if (e.t < tStart || e.t > tEnd) continue;
+    if (chanFilter!=="all" && +chanFilter !== e.ch) continue;
+    const px = x(e.t);
+    ctx.strokeStyle = e.type==="off" ? "#ef5a5a" : e.type==="on" ? "#3dd68c" : "#a78bfa";
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.moveTo(px, padT); ctx.lineTo(px, padT+plotH); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fillRect(px-2, padT-3, 4, 4);
+  }
+
+  // hist stats
+  $("#hist-stats").textContent = `${data.length} samples · ${evts.filter(e=>e.t>=tStart).length} events`;
+}
+
+function chanColor(c){ return c===1 ? "#3dd68c" : c===2 ? "#5ec6f0" : "#a78bfa"; }
+
+function renderEvents(){
+  const root = $("#event-rows");
+  if (!evts.length){ root.innerHTML = `<div class="empty">No events yet. Toggle a channel or change the variable voltage to see them appear here.</div>`; $("#evt-count").textContent="0 events"; return; }
+  const recent = [...evts].reverse().slice(0,200);
+  root.innerHTML = recent.map(e=>{
+    const c = channels.find(x=>x.n===e.ch);
+    const v = e.type==="set" ? `${(+e.value).toFixed(2)} V` : "";
+    return `<div class="row ${e.type}">
+      <span class="t">${new Date(e.t).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
+      <span class="badge">${e.type.toUpperCase()}</span>
+      <span class="ch">CH${e.ch} ${c?.title||""}</span>
+      <span class="v">${v}</span>
+    </div>`;
+  }).join("");
+  $("#evt-count").textContent = `${evts.length} events`;
+}
+
+/* ---------- Wi-Fi tab --------------------------------------------- */
+let scannedNets = [];
+let selectedSSID = null;
+
+async function wifiScan(){
+  const btn = $("#wifi-scan"), lbl = $("#wifi-scan-lbl");
+  btn.disabled = true; lbl.innerHTML = `<span class="spin"></span> Scanning`;
+  try{
+    let r = await api("/api/wifi/scan");
+    for (let i = 0; r.scanning && i < 10; i++){
+      await new Promise(res => setTimeout(res, 700));
+      r = await api("/api/wifi/scan");
+    }
+    scannedNets = r.networks || [];
+    renderSSIDs();
+    $("#wifi-scan-status").textContent = `Last scan: ${new Date().toLocaleTimeString()} · ${scannedNets.length} networks`;
+  } finally { btn.disabled = false; lbl.textContent = "Scan"; }
+}
+
+function renderSSIDs(){
+  const root = $("#ssid-list");
+  if (!scannedNets.length){ root.innerHTML = `<div class="empty">No networks yet.</div>`; return; }
+  const saved = new Set(info?.saved_ssids || []);
+  root.innerHTML = scannedNets.sort((a,b)=>b.rssi-a.rssi).map(n=>`
+    <div class="ssid-row" data-ssid="${n.ssid}">
+      <div>
+        <div class="name">${n.ssid}${saved.has(n.ssid)?' <span class="kbd" style="margin-left:6px">saved</span>':''}</div>
+      </div>
+      <span class="rssi">${n.rssi} dBm</span>
+      <span class="lock">${n.sec==="open" ? "" : "🔒"}</span>
+    </div>
+  `).join("");
+  $$(".ssid-row", root).forEach(row=>{
+    row.addEventListener("click", ()=>{
+      $$(".ssid-row", root).forEach(r=>r.classList.remove("selected"));
+      row.classList.add("selected");
+      selectedSSID = row.dataset.ssid;
+      $("#wifi-connect").disabled = false;
+      $("#wifi-forget").disabled = !(info?.saved_ssids||[]).includes(selectedSSID);
+    });
+  });
+}
+
+/* ---------- Info refresh ------------------------------------------ */
+async function loadInfo(){
+  info = await api("/api/info");
+  $("#brand-mdns").textContent = info.mdns + ".local";
+  $("#mdns-preview").textContent = info.mdns;
+  $("#mdns-input").value = info.mdns;
+  $("#info-ssid").textContent = info.ssid;
+  $("#info-ip").textContent = info.ip;
+  $("#info-mac").textContent = info.mac;
+  $("#info-rssi").textContent = info.rssi + " dBm";
+  $("#info-fw").textContent = "v" + info.fw;
+  $("#info-uptime").textContent = fmtUptime(info.uptime);
+  $("#conn-ip").textContent = info.ip;
+  $("#opt-login").checked = info.require_login;
+  $("#ota-url").value = info.ota.url;
+  $("#ota-ssl").checked = info.ota.ssl;
+  $("#ota-auto").checked = info.ota.auto;
+  $("#ota-warn").style.display = info.ota.ssl ? "none" : "flex";
+  $("#opt-current").checked = info.exp.current;
+  $("#opt-fast").checked = info.exp.fast;
+  $("#opt-smooth").checked = info.exp.smooth;
+  $("#opt-dial").checked = !!info.exp.dial;
+  applyDialMode();
+
+  // Safety guards
+  const g = info.guard || {};
+  $("#ocp-en").checked = !!g.ocp;
+  $("#otp-en").checked = !!g.otp;
+  $("#otp-temp").value = g.otp_temp ?? 85;
+  $("#guard-recover").checked = !!g.recover;
+
+  // MQTT
+  const m = info.mqtt || {};
+  $("#mqtt-en").checked = !!m.enabled;
+  $("#mqtt-host").value = m.host || "";
+  $("#mqtt-port").value = m.port || 1883;
+  $("#mqtt-user").value = m.user || "";
+  $("#mqtt-topic").value = m.topic || "voltbench";
+
+  // Captive portal banner
+  $("#captive-banner").style.display = info.captive ? "flex" : "none";
+
+  // WebSocket help card
+  const wsBase = info.ip ? `ws://${info.ip}/ws` : `ws://${info.mdns}.local/ws`;
+  const wsUrlEl = $("#ws-url"); if (wsUrlEl) wsUrlEl.textContent = wsBase;
+  const wsTokEl = $("#ws-token");
+  if (wsTokEl){
+    const tok = sessionStorage.getItem("ps_token");
+    wsTokEl.textContent = tok || (info.require_login ? "(log in first)" : "not required");
+  }
+}
+
+function applyDialMode(){
+  const on = !!info?.exp?.dial;
+  document.querySelectorAll('.channel[data-ch="1"]').forEach(el => el.classList.toggle("dial", on));
+}
+
+/* ---------- Tabs --------------------------------------------------- */
+function switchTab(name){
+  $$(".appbar nav button").forEach(b => b.classList.toggle("active", b.dataset.tab===name));
+  $$(".view").forEach(v => v.classList.remove("active"));
+  $("#"+name+"-view").classList.add("active");
+  if (name==="history"){ renderEvents(); drawGraph(); }
+}
+
+/* ---------- Init --------------------------------------------------- */
+async function startApp(){
+  $("#login-view").classList.remove("active");
+  $("#app").style.display = "grid";
+  $("#logout-btn").style.display = info?.require_login ? "grid" : "none";
+
+  renderChannels();
+  applyDialMode();
+  startPolling();
+  connectWS();
+  pull();
+  renderEvents();
+}
+
+async function tryLogin(pass){
+  const r = await api("/api/login", {method:"POST", body:new URLSearchParams({pass})});
+  if (r.ok){
+    sessionStorage.setItem("ps_authed","1");
+    if (r.token) sessionStorage.setItem("ps_token", r.token);
+    return true;
+  }
+  return false;
+}
+
+async function bootstrap(){
+  await loadInfo();
+  if (info.require_login && !sessionStorage.getItem("ps_authed")){
+    $("#login-view").classList.add("active");
+  } else {
+    startApp();
+  }
+}
+
+/* ---------- Wiring (controls) ------------------------------------- */
+$("#login-form").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const pw = new FormData(e.target).get("pass");
+  const ok = await tryLogin(pw);
+  if (ok) { $("#login-err").classList.remove("show"); await loadInfo(); startApp(); }
+  else $("#login-err").classList.add("show");
+});
+
+$("#logout-btn").addEventListener("click", ()=>{
+  sessionStorage.removeItem("ps_authed");
+  location.reload();
+});
+
+$$(".appbar nav button").forEach(b => b.addEventListener("click", ()=> switchTab(b.dataset.tab)));
+
+$("#all-off-btn").addEventListener("click", async ()=>{
+  await api("/api/control", {method:"POST", body:new URLSearchParams({action:"all_off"})});
+  for (const c of channels) pushEvt("off", c.n, null, c.title);
+  pull();
+  toast("All outputs off", "Every channel was disabled.");
+});
+
+/* History controls */
+$("#window-seg").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if (!b) return;
+  $$("#window-seg button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");
+  windowMs = +b.dataset.w;
+  drawGraph();
+});
+$("#chan-seg").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if (!b) return;
+  $$("#chan-seg button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");
+  chanFilter = b.dataset.c;
+  drawGraph();
+});
+$("#clear-hist").addEventListener("click", ()=>{
+  if (!confirm("Clear local history and events?")) return;
+  hist = []; evts = [];
+  localStorage.removeItem(HIST_KEY); localStorage.removeItem(EVT_KEY);
+  drawGraph(); renderEvents();
+  toast("History cleared","All samples and events removed from this browser.");
+});
+$("#export-csv").addEventListener("click", ()=>{
+  const lines = ["timestamp_iso,channel1_v,channel2_v,channel3_v,channel1_on,channel2_on,channel3_on,channel1_set_v"];
+  for (const d of hist){
+    lines.push([new Date(d.t).toISOString(), d.v1, d.v2, d.v3, d.o1?1:0, d.o2?1:0, d.o3?1:0, d.s1].join(","));
+  }
+  const blob = new Blob([lines.join("\n")], {type:"text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `power-supply-history-${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+
+/* Settings — device */
+$("#save-mdns").addEventListener("click", async ()=>{
+  const v = $("#mdns-input").value.trim().toLowerCase().replace(/[^a-z0-9-]/g,"");
+  if (!v) return toast("Invalid name","mDNS hostname can't be empty","err");
+  await api("/api/settings", {method:"POST", body: JSON.stringify({mdns:v})});
+  $("#brand-mdns").textContent = v + ".local";
+  $("#mdns-preview").textContent = v;
+  toast("mDNS updated", `Reboot the device to apply ${v}.local`,"warn");
+});
+
+/* Settings — security */
+$("#opt-login").addEventListener("change", e=>{
+  if (!e.target.checked && !confirm("Disabling login leaves the control panel open to anyone on this network. Continue?")) {
+    e.target.checked = true;
+  }
+});
+$("#save-security").addEventListener("click", async ()=>{
+  const body = { require_login: $("#opt-login").checked };
+  const np = $("#pw-new").value;
+  if (np){
+    if (np.length < 4) return toast("Password too short","Use at least 4 characters","err");
+    body.password = np;
+  }
+  await api("/api/settings", {method:"POST", body: JSON.stringify(body)});
+  $("#pw-new").value = "";
+  toast("Security saved", body.password ? "Password changed." : "Settings updated.");
+});
+
+/* Settings — Wi-Fi */
+$("#wifi-scan").addEventListener("click", wifiScan);
+$("#wifi-connect").addEventListener("click", async ()=>{
+  if (!selectedSSID) return;
+  const pw = $("#wifi-pw").value;
+  const btn = $("#wifi-connect"); btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Connecting`;
+  await api("/api/wifi/connect", {method:"POST", body:new URLSearchParams({ssid:selectedSSID, pass:pw})});
+  btn.innerHTML = "Connect";
+  toast("Connecting…", `Joining ${selectedSSID}. The device may briefly disconnect.`);
+  setTimeout(loadInfo, 1200);
+});
+$("#wifi-forget").addEventListener("click", async ()=>{
+  if (!selectedSSID) return;
+  if (!confirm(`Forget saved credentials for "${selectedSSID}"?`)) return;
+  await api("/api/wifi/forget", {method:"POST", body:new URLSearchParams({ssid:selectedSSID})});
+  await loadInfo();
+  toast("Forgotten", `Credentials for ${selectedSSID} removed.`);
+});
+
+/* Settings — OTA */
+$("#ota-ssl").addEventListener("change", e=>{
+  $("#ota-warn").style.display = e.target.checked ? "none" : "flex";
+});
+async function saveOta(){
+  await api("/api/settings", {method:"POST", body: JSON.stringify({
+    ota:{url:$("#ota-url").value.trim(), ssl:$("#ota-ssl").checked, auto:$("#ota-auto").checked}
+  })});
+}
+$("#ota-url").addEventListener("change", saveOta);
+$("#ota-ssl").addEventListener("change", saveOta);
+$("#ota-auto").addEventListener("change", saveOta);
+
+$("#ota-check").addEventListener("click", async ()=>{
+  await saveOta();
+  const r = await api("/api/ota/check");
+  if (r.newer) toast("Update available", `Current v${r.current} → latest v${r.latest}`,"warn");
+  else toast("Up to date", `Running latest v${r.current}`);
+});
+
+async function runOta(force){
+  if (force && !confirm("Force-push the latest firmware regardless of version? The device will reboot.")) return;
+  await saveOta();
+  const bar = $("#ota-bar"), wrap = $("#ota-progress");
+  wrap.classList.add("show"); bar.style.width = "0%";
+  await api(force ? "/api/ota/force" : "/api/ota/update");
+  let p = 0;
+  const tick = setInterval(()=>{
+    p = Math.min(100, p + 6 + Math.random()*10);
+    bar.style.width = p + "%";
+    if (p>=100){ clearInterval(tick); toast("OTA complete","Device will reboot shortly."); setTimeout(()=>wrap.classList.remove("show"),2000); }
+  }, 380);
+}
+$("#ota-update").addEventListener("click", ()=> runOta(false));
+$("#ota-force").addEventListener("click", ()=> runOta(true));
+
+/* Settings — experimental */
+async function saveExp(){
+  await api("/api/settings", {method:"POST", body: JSON.stringify({
+    exp:{current:$("#opt-current").checked, fast:$("#opt-fast").checked, smooth:$("#opt-smooth").checked, dial:$("#opt-dial").checked}
+  })});
+  info.exp = {current:$("#opt-current").checked, fast:$("#opt-fast").checked, smooth:$("#opt-smooth").checked, dial:$("#opt-dial").checked};
+  startPolling();
+  applyDialMode();
+}
+$("#opt-current").addEventListener("change", ()=>{ saveExp(); if (lastStatus) paintChannels(lastStatus); });
+$("#opt-fast").addEventListener("change", saveExp);
+$("#opt-smooth").addEventListener("change", saveExp);
+$("#opt-dial").addEventListener("change", saveExp);
+
+/* Settings — safety guards */
+$("#save-guard").addEventListener("click", async ()=>{
+  await api("/api/settings", {method:"POST", body: JSON.stringify({
+    guard:{ocp:$("#ocp-en").checked, otp:$("#otp-en").checked, otp_temp:+$("#otp-temp").value||85, recover:$("#guard-recover").checked}
+  })});
+  toast("Guards saved","Safety thresholds applied.");
+});
+
+/* Settings — MQTT */
+$("#save-mqtt").addEventListener("click", async ()=>{
+  const body = {mqtt:{
+    enabled:$("#mqtt-en").checked,
+    host:$("#mqtt-host").value.trim(),
+    port:+$("#mqtt-port").value||1883,
+    user:$("#mqtt-user").value,
+    pass:$("#mqtt-pass").value || undefined,
+    topic:$("#mqtt-topic").value.trim()||"voltbench"
+  }};
+  await api("/api/settings", {method:"POST", body: JSON.stringify(body)});
+  $("#mqtt-pass").value = "";
+  toast("MQTT saved", body.mqtt.enabled ? `Publishing to ${body.mqtt.topic}/#` : "MQTT bridge disabled");
+});
+$("#mqtt-test").addEventListener("click", async ()=>{
+  const btn = $("#mqtt-test"); btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Testing`;
+  const r = await api("/api/mqtt/test");
+  btn.disabled = false; btn.textContent = "Test";
+  if (r.ok) toast("MQTT OK", `Connected to ${$("#mqtt-host").value}`);
+  else toast("MQTT failed", r.err || "Could not reach broker", "err");
+});
+
+$("#reboot-btn").addEventListener("click", async ()=>{
+  if (!confirm("Reboot the device now?")) return;
+  await api("/api/reboot");
+  toast("Rebooting","Reconnecting in a few seconds…","warn");
+});
+$("#factory-btn").addEventListener("click", async ()=>{
+  if (!confirm("Factory reset will erase Wi-Fi credentials, mDNS name and password. Continue?")) return;
+  await api("/api/factory_reset", {method:"POST"});
+  toast("Factory reset","Device is reverting to defaults.","warn");
+});
+
+/* Settings — WebSocket help */
+const copyWsTok = $("#copy-ws-token");
+if (copyWsTok) copyWsTok.addEventListener("click", ()=>{
+  const tok = sessionStorage.getItem("ps_token") || "";
+  if (!tok){ toast("No token","Log in first to get your auth token","err"); return; }
+  navigator.clipboard.writeText(tok).then(()=> toast("Copied","Auth token copied to clipboard"));
+});
+
+/* periodic info refresh */
+setInterval(loadInfo, 10000);
+
+/* Boot */
+bootstrap();
+
+})();
+</script>
+</body>
+</html>

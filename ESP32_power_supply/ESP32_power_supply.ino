@@ -5,6 +5,7 @@
 //             Voltage divider: VOUT — 10K — FB — MCP4017 — GND
 //             ADC divider:     VOUT — 10K:1K → VOLTAGE_READ_PIN_VV (×11 scale)
 // =============================================================================
+#pragma GCC optimize("Os")   // optimize for size — recovers ~50-80 KB
 #include <Wire.h>
 #include <SW_MCP4017.h>
 #include <WiFi.h>
@@ -13,7 +14,6 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
-#include <WiFiClientSecure.h>
 #include "driver/rtc_io.h"
 #include <ESPmDNS.h>
 
@@ -198,22 +198,12 @@ void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
   if (!force && latest == CURRENT_FIRMWARE_VERSION) { Serial.println("OTA: already up-to-date"); return; }
 
   String firmware_url = ota_url + "firmware_" + latest + ".bin";
+  WiFiClient c;
   httpUpdate.rebootOnUpdate(true);
-  t_httpUpdate_return ret;
-
-  if (verify_ssl) {
-    WiFiClientSecure sc;
-    sc.setInsecure();   // skip cert chain — still encrypts the transfer
-    ret = httpUpdate.update(sc, firmware_url);
-  } else {
-    WiFiClient c;
-    ret = httpUpdate.update(c, firmware_url);
-  }
-
-  if (ret == HTTP_UPDATE_FAILED) {
+  t_httpUpdate_return ret = httpUpdate.update(c, firmware_url);
+  if (ret == HTTP_UPDATE_FAILED)
     Serial.printf("OTA: failed (%d) %s\n",
       httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
-  }
 }
 
 // =============================================================================

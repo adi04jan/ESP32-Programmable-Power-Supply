@@ -185,7 +185,7 @@ bool vb_try_saved_wifi(uint32_t timeout_ms = 12000) {
 }
 
 void vb_start_captive_ap() {
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);   // STA needed so scanNetworks() still works in AP mode
   String apName = "Voltbench-" + String((uint32_t)ESP.getEfuseMac(), HEX);
   WiFi.softAP(apName.c_str());
   vb_dns.start(53, "*", WiFi.softAPIP());
@@ -254,8 +254,8 @@ void vb_fill_status(JsonDocument &d) {
   d["output1"]  = psState.output1;
   d["output2"]  = psState.output2;
   d["output3"]  = psState.output3;
-  // Use g_measured_mV (fresh from voltageControlTask) for live voltage readout
-  d["voltage1"] = g_measured_mV / 1000.0f;
+  // read_VV_volt() = 5-sample rolling average — smoother than raw g_measured_mV
+  d["voltage1"] = read_VV_volt() / 1000.0f;
   d["voltage2"] = read_5V_volt()  / 1000.0f;
   d["voltage3"] = read_3V3_volt() / 1000.0f;
   d["current1"] = vb_read_current(1);
@@ -283,9 +283,40 @@ void vb_push_status() {
   vb_ws.textAll(out);
 }
 
-void vb_on_ws_event(AsyncWebSocket *s, AsyncWebSocketClient *c,
+void vb_on_ws_event(AsyncWebSocket *srv, AsyncWebSocketClient *c,
                     AwsEventType t, void *arg, uint8_t *data, size_t len) {
-  // Server-push only; no incoming command processing needed
+  if (t != WS_EVT_DATA) return;
+  AwsFrameInfo *fi = (AwsFrameInfo *)arg;
+  if (!fi->final || fi->index != 0 || fi->len != len || fi->opcode != WS_TEXT) return;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, data, len) != DeserializationError::Ok) return;
+
+  if (vb.require_login) {
+    const char *tok = doc["token"];
+    if (!tok || String(tok) != vb.auth_token) { c->text("{\"err\":\"auth\"}"); return; }
+  }
+
+  const char *action = doc["action"];
+  if (!action) return;
+  String act = action;
+  int    output = doc["output"] | 0;
+  float  value  = doc["value"]  | 0.0f;
+
+  if      (act == "toggle" && output >= 1 && output <= 3) {
+    bool on = doc["value"].is<bool>() ? doc["value"].as<bool>() : (value >= 0.5f);
+    setOutput(output, on);
+    vb.trip[output - 1] = false;
+  }
+  else if (act == "set_voltage" && output == 1)               { setVoltage(value); }
+  else if (act == "set_ilimit"  && output >= 1 && output <= 3){ vb.ilim[output-1] = value; vb_save(); }
+  else if (act == "all_off")    { setOutput(1,false); setOutput(2,false); setOutput(3,false); }
+  else if (act == "clear_trip") { for (int i=0;i<3;i++) vb.trip[i] = false; }
+
+  JsonDocument resp;
+  vb_fill_status(resp);
+  String out; serializeJson(resp, out);
+  c->text(out);
 }
 
 // =============================================================================
