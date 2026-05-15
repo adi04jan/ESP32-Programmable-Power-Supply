@@ -325,6 +325,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                 <div class="status-indicator" id="status1"></div>
             </div>
             <div class="display" id="display1">0.0V</div>
+            <div style="text-align:center; font-size:0.85rem; color:#888; margin-top:-8px; margin-bottom:8px;">Set: <span id="setpoint1">2.5V</span></div>
             <div class="slider-container">
                 <input type="range" min="2.5" max="19" step="0.1" value="2.5" class="slider" id="voltage1">
                 <!-- Quick Set Buttons Start -->
@@ -371,6 +372,11 @@ const char index_html[] PROGMEM = R"rawliteral(
         const slider = document.getElementById('voltage1');
         const display = document.getElementById('display1');
         let voltageTimer = null;
+        let sliderDragging = false;
+        slider.addEventListener('mousedown',  () => { sliderDragging = true; });
+        slider.addEventListener('touchstart', () => { sliderDragging = true; }, {passive:true});
+        slider.addEventListener('mouseup',    () => { sliderDragging = false; });
+        slider.addEventListener('touchend',   () => { sliderDragging = false; });
         slider.addEventListener('input', function() {
             state.voltage1 = parseFloat(this.value);
             display.textContent = state.voltage1.toFixed(1) + 'V';
@@ -382,7 +388,9 @@ const char index_html[] PROGMEM = R"rawliteral(
             slider.value = value;
             state.voltage1 = value;
             display.textContent = value.toFixed(1) + 'V';
-            sendCommand('set_voltage', 1, value);
+            document.getElementById('setpoint1').textContent = value.toFixed(1) + 'V';
+            clearTimeout(voltageTimer);
+            voltageTimer = setTimeout(() => sendCommand('set_voltage', 1, value), 300);
         }
         display.textContent = '2.5V';
         function toggle(output) {
@@ -459,12 +467,15 @@ const char index_html[] PROGMEM = R"rawliteral(
                         }
                     });
                     // Voltages
-                    document.getElementById('display1').textContent = data.voltage1.toFixed(2) + 'V';
+                    if (!sliderDragging) {
+                        document.getElementById('display1').textContent = data.voltage1.toFixed(2) + 'V';
+                    }
+                    document.getElementById('setpoint1').textContent = (data.setpoint1 !== undefined ? data.setpoint1 : data.voltage1).toFixed(2) + 'V';
                     document.getElementById('display2').textContent = data.voltage2.toFixed(2) + 'V';
                     document.getElementById('display3').textContent = data.voltage3.toFixed(2) + 'V';
                 });
         }
-        setInterval(refreshStates, 2000);
+        setInterval(refreshStates, 1000);
         window.onload = refreshStates;
     </script>
 </body>
