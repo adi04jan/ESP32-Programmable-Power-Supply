@@ -359,9 +359,8 @@ void set_voltage(uint32_t target_mV) {
   for (int i = 0; i < 3; i++) {
     measured = read_VV_volt();
     long diff = (long)target_mV - (long)measured;
-    if (abs(diff) >= VOLTAGE_ERROR_MAX) {
-      // target reached
-      break;
+    if (abs(diff) < VOLTAGE_ERROR_MAX) {
+      break;  // already within tolerance
     }
     fine_tune_volt(target_mV);
   }
