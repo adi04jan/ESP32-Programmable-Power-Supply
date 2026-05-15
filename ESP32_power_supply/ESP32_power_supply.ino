@@ -245,11 +245,14 @@ void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
   }
 }
 
+// =============================================================================
+//   Voltbench: NVS, gzip serving, WebSocket, captive portal, guards, MQTT
+//   Include AFTER all shared symbols are defined above.
+// =============================================================================
+#include "firmware-additions.h"
+
 static bool ota_force_flag = false;
 static void ota_task_fn(void *pv) {
-  // vb is not yet fully initialised here at include time, but by the time
-  // the task runs vb_setup() has already populated it from NVS.
-  extern struct VBSettings vb;
   perform_ota(ota_force_flag, vb.ota_ssl, vb.ota_url);
   ota_force_flag = false;
   vTaskDelete(NULL);
@@ -257,12 +260,6 @@ static void ota_task_fn(void *pv) {
 void perform_ota_tasked() {
   xTaskCreatePinnedToCore(ota_task_fn, "otaTask", 8192, NULL, 5, NULL, 0);
 }
-
-// =============================================================================
-//   Voltbench: NVS, gzip serving, WebSocket, captive portal, guards, MQTT
-//   Include AFTER all shared symbols are defined above.
-// =============================================================================
-#include "firmware-additions.h"
 
 // =============================================================================
 //   Arduino entry points

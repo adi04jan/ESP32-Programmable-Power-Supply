@@ -1,4 +1,4 @@
-﻿// Auto-generated from Power Supply.html — do not edit manually
+// Auto-generated from Power Supply.html — do not edit manually
 #pragma once
 #include <pgmspace.h>
 
