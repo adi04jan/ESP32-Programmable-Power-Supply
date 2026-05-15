@@ -324,6 +324,8 @@ canvas#graph{display:block;width:100%;height:380px}
 .event-list .row.off .badge{color:#ffb6b6}
 .event-list .row.set .badge{color:#cdbaff}
 .event-list .badge{display:inline-block;padding:1px 7px;border:1px solid var(--line-2);border-radius:4px;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase}
+.badge{display:inline-block;padding:2px 9px;border:1px solid var(--line-2);border-radius:4px;font-size:11px;letter-spacing:.04em;text-transform:uppercase}
+.badge.ok{color:#a4f0c8;border-color:#a4f0c8}.badge.warn{color:#ffd580;border-color:#ffd580}
 .event-list .v{color:var(--text)}
 .event-list .empty{padding:30px;text-align:center;color:var(--muted);font-size:13px}
 
@@ -805,6 +807,27 @@ canvas#graph{display:block;width:100%;height:380px}
               <code class="mono" id="ws-token" style="font-size:11.5px;color:var(--muted)">—</code>
               <button class="btn ghost" style="padding:3px 10px;font-size:11px" id="copy-ws-token">Copy</button>
             </div>
+          </div>
+        </div>
+
+        <!-- PID Controller -->
+        <div class="card">
+          <h3>PID Voltage Control</h3>
+          <p class="desc">Closed-loop PID corrects formula error after each setpoint change. Auto-tune runs a relay test at the current setpoint to find optimal gains — leave output on and voltage set before tuning.</p>
+          <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="lbl">State:</span>
+            <span id="pid-state-badge" class="badge">idle</span>
+            <span class="sub" id="pid-tuned-label"></span>
+          </div>
+          <div class="row" style="gap:16px;flex-wrap:wrap;margin-top:8px">
+            <div class="field" style="flex:1;min-width:80px"><label>Kp</label><input class="input" id="pid-kp" type="number" step="0.001" min="0"></div>
+            <div class="field" style="flex:1;min-width:80px"><label>Ki</label><input class="input" id="pid-ki" type="number" step="0.001" min="0"></div>
+            <div class="field" style="flex:1;min-width:80px"><label>Kd</label><input class="input" id="pid-kd" type="number" step="0.001" min="0"></div>
+          </div>
+          <div class="row" style="gap:8px;margin-top:8px">
+            <button class="btn primary" id="pid-save">Save Gains</button>
+            <button class="btn ghost" id="pid-tune">Auto-tune</button>
+            <button class="btn ghost" id="pid-reset">Reset Defaults</button>
           </div>
         </div>
 
@@ -1378,6 +1401,9 @@ function syncChannelControls(s){
 }
 
 /* ---------- Polling ----------------------------------------------- */
+const PID_STATE_LABEL = {idle:"Idle",settling:"Settling…",running:"Running",converged:"Converged",tuning:"Tuning…"};
+const PID_STATE_CLASS  = {idle:"",settling:"warn",running:"warn",converged:"ok",tuning:"warn"};
+
 function onStatus(s){
   lastStatus = s;
   paintChannels(s);
@@ -1387,6 +1413,20 @@ function onStatus(s){
   $("#conn-pill").classList.remove("err","warn");
   $("#conn-pill").classList.add("ok");
   $("#conn-text").textContent = wsAlive ? "Live" : "Connected";
+  // PID state badge
+  if (s.pid_state) {
+    const badge = $("#pid-state-badge");
+    if (badge) {
+      badge.textContent = PID_STATE_LABEL[s.pid_state] || s.pid_state;
+      badge.className = "badge " + (PID_STATE_CLASS[s.pid_state] || "");
+    }
+    // After tuning completes, refresh gains
+    if (s.pid_state === "converged" && badge && badge._wastuning) {
+      badge._wastuning = false;
+      loadInfo();
+    }
+    if (s.pid_state === "tuning" && badge) badge._wastuning = true;
+  }
 }
 
 async function pull(){
@@ -1676,6 +1716,11 @@ async function loadInfo(){
     $("#mqtt-port").value = m.port || 1883;
     $("#mqtt-user").value = m.user || "";
     $("#mqtt-topic").value = m.topic || "voltbench";
+    const p = info.pid || {};
+    $("#pid-kp").value = (p.kp ?? 0.5).toFixed(3);
+    $("#pid-ki").value = (p.ki ?? 0.1).toFixed(3);
+    $("#pid-kd").value = (p.kd ?? 0.02).toFixed(3);
+    $("#pid-tuned-label").textContent = p.tuned ? "Tuned" : "Default gains";
   }
 }
 
@@ -1892,6 +1937,33 @@ $("#save-guard").addEventListener("click", async ()=>{
     guard:{ocp:$("#ocp-en").checked, otp:$("#otp-en").checked, otp_temp:+$("#otp-temp").value||85, recover:$("#guard-recover").checked}
   })});
   toast("Guards saved","Safety thresholds applied.");
+});
+
+/* Settings — PID */
+$("#pid-save").addEventListener("click", async ()=>{
+  const kp = +$("#pid-kp").value, ki = +$("#pid-ki").value, kd = +$("#pid-kd").value;
+  if (isNaN(kp)||isNaN(ki)||isNaN(kd)) return toast("Error","Invalid gain values.");
+  await api("/api/settings", {method:"POST", body: JSON.stringify({pid:{kp,ki,kd}})});
+  toast("PID gains saved", `Kp=${kp.toFixed(3)}  Ki=${ki.toFixed(3)}  Kd=${kd.toFixed(3)}`);
+  await loadInfo();
+});
+$("#pid-tune").addEventListener("click", async ()=>{
+  const btn = $("#pid-tune");
+  btn.disabled = true; btn.textContent = "Tuning…";
+  const r = await api("/api/pid/tune", {method:"POST"});
+  if (r && r.ok) {
+    toast("Auto-tune started","Relay test running — watch PID state badge. Takes up to 30 s.");
+  } else {
+    toast("Error", r?.err || "Could not start tune");
+    btn.disabled = false; btn.textContent = "Auto-tune";
+  }
+  // Re-enable button once state leaves "tuning" (handled by onStatus)
+  const reEnable = setInterval(()=>{ if (lastStatus?.pid_state !== "tuning") { btn.disabled=false; btn.textContent="Auto-tune"; clearInterval(reEnable); }}, 1000);
+});
+$("#pid-reset").addEventListener("click", async ()=>{
+  await api("/api/pid/reset", {method:"POST"});
+  toast("PID reset","Gains reset to defaults.");
+  await loadInfo();
 });
 
 /* Settings — MQTT */

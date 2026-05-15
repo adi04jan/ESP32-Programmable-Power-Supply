@@ -3,7 +3,7 @@
 //   Hardware: LM2596-ADJ (variable), Mini360 5V, LM1117 3.3V
 //             MCP4017T-103E/LT (10K, 128-step) I2C digital pot @ 0x2F
 //             Voltage divider: VOUT — 10K — FB — MCP4017 — GND
-//             ADC divider:     VOUT — 10K:1K → VOLTAGE_READ_PIN_VV (×11 scale)
+//             ADC divider:     VOUT — 47K:1K → VOLTAGE_READ_PIN_VV (×48 scale)
 // =============================================================================
 #pragma GCC optimize("Os")   // optimize for size — recovers ~50-80 KB
 #include <Wire.h>
@@ -55,6 +55,13 @@ volatile uint32_t g_target_mV    = 2500;
 volatile uint32_t g_setpoint_mV  = 2500;
 volatile uint32_t g_measured_mV  = 0;
 volatile bool     g_ctrl_output1 = false;
+
+// PID state — written by voltageControlTask, read by firmware-additions.h
+volatile float   g_pid_kp       = 0.50f;
+volatile float   g_pid_ki       = 0.10f;
+volatile float   g_pid_kd       = 0.02f;
+volatile uint8_t g_vctrl_state  = 0;    // 0=idle 1=settling 2=pid 3=converged 4=tuning
+volatile bool    g_autotune_req = false;
 
 // =============================================================================
 //   ADC averaging (rolling buffer)
@@ -109,43 +116,94 @@ void setVoltage(float voltage) {
 }
 
 // =============================================================================
-//   voltageControlTask — owns all I2C pot writes and ADC reads
+//   voltageControlTask — PID state machine
+//   States: 0=idle  1=settling  2=pid-running  3=converged  4=auto-tuning
 //   Runs on core 0, priority 2. Web handlers return immediately.
 // =============================================================================
+static uint32_t vctrl_sample8() {
+  uint32_t sum = 0;
+  for (int s = 0; s < 8; s++) {
+    sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  return (sum / 8) * 48;
+}
+
+// pid_autotune() is defined after #include "firmware-additions.h"
+bool pid_autotune(uint32_t target);
+
 void voltageControlTask(void* pvParameters) {
-  const uint32_t MONITOR_MS = 200;
+  float    integral   = 0.0f;
+  float    prev_err   = 0.0f;
   uint32_t lastTarget = g_target_mV;
+  uint32_t settle_t   = 0;
+  int      conv_count = 0;
+  uint8_t  state      = 0;
 
   for (;;) {
-    uint32_t target = g_target_mV;
+    if (g_autotune_req) {
+      g_autotune_req = false;
+      g_vctrl_state  = 4;
+      pid_autotune(g_target_mV);
+      integral = 0; prev_err = 0; conv_count = 0;
+      lastTarget = 0;   // force formula re-set next iteration
+      state = 0; g_vctrl_state = 0;
+      continue;
+    }
 
+    uint32_t target = g_target_mV;
     if (target != lastTarget) {
       lastTarget = target;
-      // Formula-based set, then freeze — no fine-tune
+      integral = 0; prev_err = 0; conv_count = 0;
       if (target > (uint32_t)DC_V_REF) {
         long r_calc = (long)((DC_R2_REF * DC_V_REF) / (target - DC_V_REF)) - MCPWIPEROHMS;
         uint32_t r_val = (r_calc > 0) ? (uint32_t)r_calc : 0;
         i2cDP.setResistance(r_val);
         Serial.printf("[VCtrl] target=%umV R=%u\n", target, r_val);
       }
-      vTaskDelay(pdMS_TO_TICKS(150));
-      uint32_t sum = 0;
-      for (int s = 0; s < 8; s++) {
-        sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-        vTaskDelay(pdMS_TO_TICKS(10));
-      }
-      g_measured_mV = (sum / 8) * 48;
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(MONITOR_MS));
-      uint32_t sum = 0;
-      for (int s = 0; s < 8; s++) {
-        sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-        vTaskDelay(pdMS_TO_TICKS(10));
-      }
-      g_measured_mV = (sum / 8) * 48;
+      settle_t = millis();
+      state = 1; g_vctrl_state = 1;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // ~80 ms ADC sample — runs every loop regardless of state
+    g_measured_mV = vctrl_sample8();
+
+    if (state == 1 && millis() - settle_t >= 300) {
+      state = 2; g_vctrl_state = 2;
+    }
+
+    if (state == 2) {
+      if (target > (uint32_t)DC_V_REF) {
+        float error = (float)target - (float)g_measured_mV;
+        float r2    = (float)i2cDP.calcResistance();
+
+        // Integral with anti-windup (clamp to ±3V equivalent contribution)
+        integral += error * 0.29f;
+        if (g_pid_ki > 0.0f) {
+          float lim = 3000.0f / g_pid_ki;
+          integral  = constrain(integral, -lim, lim);
+        }
+
+        float deriv  = (error - prev_err) / 0.29f;
+        prev_err = error;
+
+        // PID output in mV correction → linearise to ΔR
+        // dVOUT/dR = −Vref×Rtop/R² → dR = −dV × R²/(Vref×Rtop)
+        float v_corr = g_pid_kp * error + g_pid_ki * integral + g_pid_kd * deriv;
+        float new_r  = constrain(r2 - v_corr * r2 * r2 / ((float)DC_V_REF * (float)DC_R2_REF),
+                                 0.0f, (float)DC_R2_REF);
+        i2cDP.setResistance((uint32_t)new_r);
+        Serial.printf("[PID] err=%.0f r=%.0f meas=%u\n", error, new_r, (uint32_t)g_measured_mV);
+
+        if (fabsf(error) < 100.0f) {
+          if (++conv_count >= 3) { state = 3; g_vctrl_state = 3; Serial.println("[PID] converged"); }
+        } else { conv_count = 0; }
+      } else {
+        state = 3; g_vctrl_state = 3;  // below Vref — formula can't drive here
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(200));
   }
 }
 
@@ -177,6 +235,102 @@ void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
 //   Include AFTER all shared symbols are defined above.
 // =============================================================================
 #include "firmware-additions.h"
+
+// =============================================================================
+//   Relay-feedback auto-tune (Åström-Hägglund)
+//   Called from voltageControlTask (core 0) when g_autotune_req is set.
+//   Computes Ziegler-Nichols Kp/Ki/Kd and persists them to NVS.
+// =============================================================================
+bool pid_autotune(uint32_t target) {
+  if (target <= (uint32_t)DC_V_REF) return false;
+
+  long r_cl = (long)((DC_R2_REF * DC_V_REF) / (target - DC_V_REF)) - MCPWIPEROHMS;
+  if (r_cl < 0) r_cl = 0;
+  float rc = (float)r_cl;
+
+  // Relay amplitude: aim for ~150 mV voltage swing, clamped 2–8 MCP4017 steps
+  const float STEP = 79.0f;
+  float relay_r = constrain(150.0f * rc * rc / ((float)DC_V_REF * (float)DC_R2_REF),
+                            STEP * 2, STEP * 8);
+  Serial.printf("[AutoTune] target=%umV Rc=%.0f relayR=%.0f\n", target, rc, relay_r);
+
+  // Formula set + settle
+  i2cDP.setResistance((uint32_t)rc);
+  vTaskDelay(pdMS_TO_TICKS(800));
+
+  const int MAX_CROSS = 8;
+  uint32_t  cross_t[MAX_CROSS];
+  int       n_cross    = 0;
+  bool      relay_up   = true;   // true = lower R = higher V
+  uint32_t  meas_max   = 0, meas_min = 0xFFFFFFFFu;
+  bool      tracking   = false;
+  uint32_t  t_start    = millis();
+
+  i2cDP.setResistance((uint32_t)constrain(rc - relay_r, 0.0f, (float)DC_R2_REF));
+
+  while (n_cross < MAX_CROSS && millis() - t_start < 30000) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+    uint32_t sum = 0;
+    for (int s = 0; s < 4; s++) {
+      sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    uint32_t meas = (sum / 4) * 48;
+    g_measured_mV = meas;
+
+    if (tracking) {
+      if (meas > meas_max) meas_max = meas;
+      if (meas < meas_min) meas_min = meas;
+    }
+
+    if (relay_up && meas >= target) {
+      relay_up = false;
+      i2cDP.setResistance((uint32_t)constrain(rc + relay_r, 0.0f, (float)DC_R2_REF));
+      cross_t[n_cross++] = millis();
+      tracking = true;
+      Serial.printf("[AutoTune] ^ cross meas=%u\n", meas);
+    } else if (!relay_up && meas < target) {
+      relay_up = true;
+      i2cDP.setResistance((uint32_t)constrain(rc - relay_r, 0.0f, (float)DC_R2_REF));
+      cross_t[n_cross++] = millis();
+      Serial.printf("[AutoTune] v cross meas=%u\n", meas);
+    }
+  }
+
+  i2cDP.setResistance((uint32_t)rc);
+
+  if (n_cross < 4 || meas_max <= meas_min) {
+    Serial.println("[AutoTune] FAIL: too few oscillations");
+    return false;
+  }
+
+  // Average period over full cycles (pair of crossings = one period)
+  float Tu_sum = 0; int Tu_n = 0;
+  for (int i = 2; i < n_cross; i += 2) { Tu_sum += cross_t[i] - cross_t[i-2]; Tu_n++; }
+  if (Tu_n == 0) return false;
+  float Tu = Tu_sum / Tu_n / 1000.0f;              // seconds
+  float Au = (meas_max - meas_min) / 2.0f;          // mV half-amplitude
+
+  if (Tu < 0.2f || Au < 30.0f) {
+    Serial.printf("[AutoTune] FAIL: Tu=%.3fs Au=%.1fmV\n", Tu, Au);
+    return false;
+  }
+
+  // Relay voltage amplitude at operating point
+  float d_v = relay_r * (float)DC_V_REF * (float)DC_R2_REF / (rc * rc);
+  float Ku  = 4.0f * d_v / (3.14159265f * Au);
+
+  // Ziegler-Nichols PID
+  g_pid_kp = 0.6f   * Ku;
+  g_pid_ki = 1.2f   * Ku / Tu;
+  g_pid_kd = 0.075f * Ku * Tu;
+  vb.pid_kp = g_pid_kp; vb.pid_ki = g_pid_ki; vb.pid_kd = g_pid_kd;
+  vb.pid_tuned = true;
+  vb_save();
+  Serial.printf("[AutoTune] OK Tu=%.3fs Au=%.1fmV Ku=%.4f → Kp=%.4f Ki=%.4f Kd=%.4f\n",
+    Tu, Au, Ku, g_pid_kp, g_pid_ki, g_pid_kd);
+  return true;
+}
 
 static bool ota_force_flag = false;
 static void ota_task_fn(void *pv) {
