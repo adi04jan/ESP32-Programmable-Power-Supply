@@ -12,7 +12,7 @@
 #include "web_page.h"
 #include <ESPmDNS.h>
 
-#define CURRENT_FIRMWARE_VERSION "0.0.2"  // Change this as needed
+#define CURRENT_FIRMWARE_VERSION "0.0.1"  // Change this as needed
 #define WIFI_TIMEOUT 60
 
 #define DC_R2_REF 10000
