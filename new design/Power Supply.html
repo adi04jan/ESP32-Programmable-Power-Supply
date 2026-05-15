@@ -1091,7 +1091,7 @@ let evts = JSON.parse(localStorage.getItem(EVT_KEY)  || "[]");
 
 let saveHistTimer = null;
 function pushHist(s){
-  hist.push({t:s.ts, v1:s.voltage1, v2:s.voltage2, v3:s.voltage3, o1:s.output1, o2:s.output2, o3:s.output3, s1:s.set1});
+  hist.push({t:Date.now(), v1:s.voltage1, v2:s.voltage2, v3:s.voltage3, o1:s.output1, o2:s.output2, o3:s.output3, s1:s.set1});
   if (hist.length > HIST_MAX) hist.splice(0, hist.length - HIST_MAX);
   if (saveHistTimer) clearTimeout(saveHistTimer);
   saveHistTimer = setTimeout(()=>localStorage.setItem(HIST_KEY, JSON.stringify(hist)), 1200);
