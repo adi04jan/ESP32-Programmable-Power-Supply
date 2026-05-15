@@ -120,19 +120,21 @@ void setVoltage(float voltage) {
 //   States: 0=idle  1=settling  2=pid-running  3=converged  4=auto-tuning
 //   Runs on core 0, priority 2. Web handlers return immediately.
 // =============================================================================
-static uint32_t vctrl_sample8() {
+// 4 samples × 5 ms = 20 ms total — fast enough for <1s convergence
+static uint32_t vctrl_sample() {
   uint32_t sum = 0;
-  for (int s = 0; s < 8; s++) {
+  for (int s = 0; s < 4; s++) {
     sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    if (s < 3) vTaskDelay(pdMS_TO_TICKS(5));
   }
-  return (sum / 8) * 48;
+  return (sum / 4) * 48;
 }
 
 // pid_autotune() is defined after #include "firmware-additions.h"
 bool pid_autotune(uint32_t target);
 
 void voltageControlTask(void* pvParameters) {
+  static const float DT    = 0.07f;  // PID dt: 20ms ADC + 50ms delay
   float    integral   = 0.0f;
   float    prev_err   = 0.0f;
   uint32_t lastTarget = g_target_mV;
@@ -146,7 +148,7 @@ void voltageControlTask(void* pvParameters) {
       g_vctrl_state  = 4;
       pid_autotune(g_target_mV);
       integral = 0; prev_err = 0; conv_count = 0;
-      lastTarget = 0;   // force formula re-set next iteration
+      lastTarget = 0;
       state = 0; g_vctrl_state = 0;
       continue;
     }
@@ -165,44 +167,43 @@ void voltageControlTask(void* pvParameters) {
       state = 1; g_vctrl_state = 1;
     }
 
-    // ~80 ms ADC sample — runs every loop regardless of state
-    g_measured_mV = vctrl_sample8();
+    // ADC: 20 ms regardless of state (display stays live)
+    g_measured_mV = vctrl_sample();
 
-    if (state == 1 && millis() - settle_t >= 300) {
+    // After 100 ms settle, enter PID
+    if (state == 1 && millis() - settle_t >= 100) {
       state = 2; g_vctrl_state = 2;
     }
 
     if (state == 2) {
       if (target > (uint32_t)DC_V_REF) {
         float error = (float)target - (float)g_measured_mV;
-        float r2    = (float)i2cDP.calcResistance();
 
-        // Integral with anti-windup (clamp to ±3V equivalent contribution)
-        integral += error * 0.29f;
-        if (g_pid_ki > 0.0f) {
-          float lim = 3000.0f / g_pid_ki;
-          integral  = constrain(integral, -lim, lim);
-        }
-
-        float deriv  = (error - prev_err) / 0.29f;
-        prev_err = error;
-
-        // PID output in mV correction → linearise to ΔR
-        // dVOUT/dR = −Vref×Rtop/R² → dR = −dV × R²/(Vref×Rtop)
-        float v_corr = g_pid_kp * error + g_pid_ki * integral + g_pid_kd * deriv;
-        float new_r  = constrain(r2 - v_corr * r2 * r2 / ((float)DC_V_REF * (float)DC_R2_REF),
-                                 0.0f, (float)DC_R2_REF);
-        i2cDP.setResistance((uint32_t)new_r);
-
+        // Fast-path: formula landed close enough — skip PID iterations
         if (fabsf(error) < 100.0f) {
-          if (++conv_count >= 3) { state = 3; g_vctrl_state = 3; }
-        } else { conv_count = 0; }
+          if (++conv_count >= 2) { state = 3; g_vctrl_state = 3; }
+        } else {
+          conv_count = 0;
+          float r2    = (float)i2cDP.calcResistance();
+          integral   += error * DT;
+          if (g_pid_ki > 0.0f) {
+            float lim = 3000.0f / g_pid_ki;
+            integral  = constrain(integral, -lim, lim);
+          }
+          float deriv  = (error - prev_err) / DT;
+          prev_err = error;
+          float v_corr = g_pid_kp * error + g_pid_ki * integral + g_pid_kd * deriv;
+          float new_r  = constrain(r2 - v_corr * r2 * r2 / ((float)DC_V_REF * (float)DC_R2_REF),
+                                   0.0f, (float)DC_R2_REF);
+          i2cDP.setResistance((uint32_t)new_r);
+        }
       } else {
-        state = 3; g_vctrl_state = 3;  // below Vref — formula can't drive here
+        state = 3; g_vctrl_state = 3;
       }
     }
 
-    vTaskDelay(pdMS_TO_TICKS(200));
+    // Fast loop while PID active, slow while monitoring
+    vTaskDelay(pdMS_TO_TICKS(state == 2 ? 50 : 200));
   }
 }
 
