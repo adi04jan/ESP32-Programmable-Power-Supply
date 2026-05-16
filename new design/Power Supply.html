@@ -824,8 +824,25 @@ canvas#graph{display:block;width:100%;height:380px}
             <div class="field" style="flex:1;min-width:80px"><label>Ki</label><input class="input" id="pid-ki" type="number" step="0.001" min="0"></div>
             <div class="field" style="flex:1;min-width:80px"><label>Kd</label><input class="input" id="pid-kd" type="number" step="0.001" min="0"></div>
           </div>
+          <div class="row" style="gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
+            <span class="lbl" style="min-width:110px">Control mode</span>
+            <select class="input" id="ctrl-mode" style="flex:1;min-width:140px">
+              <option value="0">Quick (one-shot + cache)</option>
+              <option value="1">Continuous</option>
+              <option value="2">Timed</option>
+            </select>
+            <div id="ctrl-timed-row" style="display:none;gap:8px;align-items:center">
+              <span class="lbl">Timeout</span>
+              <select class="input" id="ctrl-timeout">
+                <option value="1000">1 s</option>
+                <option value="3000">3 s</option>
+                <option value="5000">5 s</option>
+                <option value="10000">10 s</option>
+              </select>
+            </div>
+          </div>
           <div class="row" style="gap:8px;margin-top:8px">
-            <button class="btn primary" id="pid-save">Save Gains</button>
+            <button class="btn primary" id="pid-save">Save</button>
             <button class="btn ghost" id="pid-tune">Auto-tune</button>
             <button class="btn ghost" id="pid-reset">Reset Defaults</button>
           </div>
@@ -1030,6 +1047,8 @@ async function api(path, opts={}){
   const headers = opts.headers || {};
   const tok = sessionStorage.getItem("ps_token");
   if (tok) headers["X-Auth"] = tok;
+  if (opts.body && typeof opts.body === "string" && !headers["Content-Type"])
+    headers["Content-Type"] = "application/json";
   try {
     const r = await fetch(path, {...opts, headers});
     if (r.status === 401){ sessionStorage.removeItem("ps_authed"); sessionStorage.removeItem("ps_token"); location.reload(); throw new Error("auth"); }
@@ -1721,6 +1740,13 @@ async function loadInfo(){
     $("#pid-ki").value = (p.ki ?? 0.1).toFixed(3);
     $("#pid-kd").value = (p.kd ?? 0.02).toFixed(3);
     $("#pid-tuned-label").textContent = p.tuned ? "Tuned" : "Default gains";
+    const c = info.ctrl || {};
+    const modeEl = $("#ctrl-mode");
+    if (modeEl) modeEl.value = c.mode ?? 0;
+    const toEl = $("#ctrl-timeout");
+    if (toEl) toEl.value = c.timeout_ms ?? 5000;
+    const timedRow = $("#ctrl-timed-row");
+    if (timedRow) timedRow.style.display = (+(c.mode ?? 0) === 2) ? "flex" : "none";
   }
 }
 
@@ -1939,12 +1965,21 @@ $("#save-guard").addEventListener("click", async ()=>{
   toast("Guards saved","Safety thresholds applied.");
 });
 
-/* Settings — PID */
+/* Settings — ctrl mode toggle */
+$("#ctrl-mode").addEventListener("change", ()=>{
+  const timedRow = $("#ctrl-timed-row");
+  if (timedRow) timedRow.style.display = +$("#ctrl-mode").value === 2 ? "flex" : "none";
+});
+
+/* Settings — PID + control mode */
 $("#pid-save").addEventListener("click", async ()=>{
   const kp = +$("#pid-kp").value, ki = +$("#pid-ki").value, kd = +$("#pid-kd").value;
   if (isNaN(kp)||isNaN(ki)||isNaN(kd)) return toast("Error","Invalid gain values.");
-  await api("/api/settings", {method:"POST", body: JSON.stringify({pid:{kp,ki,kd}})});
-  toast("PID gains saved", `Kp=${kp.toFixed(3)}  Ki=${ki.toFixed(3)}  Kd=${kd.toFixed(3)}`);
+  const mode       = +$("#ctrl-mode").value;
+  const timeout_ms = +$("#ctrl-timeout").value || 5000;
+  await api("/api/settings", {method:"POST", body: JSON.stringify({pid:{kp,ki,kd}, ctrl:{mode,timeout_ms}})});
+  const modeLabel = ["Quick","Continuous","Timed"][mode] ?? mode;
+  toast("PID & mode saved", `Kp=${kp.toFixed(3)}  Ki=${ki.toFixed(3)}  Kd=${kd.toFixed(3)} · Mode: ${modeLabel}`);
   await loadInfo();
 });
 $("#pid-tune").addEventListener("click", async ()=>{
