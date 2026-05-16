@@ -42,11 +42,13 @@ extern int  read_5V_volt();
 extern int  read_3V3_volt();
 
 // PID controller globals (defined in main sketch)
-extern volatile float   g_pid_kp;
-extern volatile float   g_pid_ki;
-extern volatile float   g_pid_kd;
-extern volatile uint8_t g_vctrl_state;
-extern volatile bool    g_autotune_req;
+extern volatile float    g_pid_kp;
+extern volatile float    g_pid_ki;
+extern volatile float    g_pid_kd;
+extern volatile uint8_t  g_vctrl_state;
+extern volatile bool     g_autotune_req;
+extern volatile uint8_t  g_ctrl_mode;
+extern volatile uint32_t g_ctrl_timeout_ms;
 
 // =============================================================================
 //   Settings + persistent storage
@@ -86,6 +88,9 @@ struct VBSettings {
   float    pid_kd        = 0.02f;
   bool     pid_tuned     = false;
 
+  uint8_t  ctrl_mode       = 0;     // 0=quick 1=continuous 2=timed
+  uint16_t ctrl_timeout_ms = 5000;
+
   static const uint8_t MAX_SSID = 4;
   String   ssid[MAX_SSID];
   String   pass[MAX_SSID];
@@ -116,17 +121,21 @@ void vb_load() {
   vb.mqtt_user     = vbPrefs.getString ("mq_user",       vb.mqtt_user);
   vb.mqtt_pass     = vbPrefs.getString ("mq_pass",       vb.mqtt_pass);
   vb.mqtt_topic    = vbPrefs.getString ("mq_topic",      vb.mqtt_topic);
-  vb.pid_kp    = vbPrefs.getFloat  ("pid_kp",    vb.pid_kp);
-  vb.pid_ki    = vbPrefs.getFloat  ("pid_ki",    vb.pid_ki);
-  vb.pid_kd    = vbPrefs.getFloat  ("pid_kd",    vb.pid_kd);
-  vb.pid_tuned = vbPrefs.getBool   ("pid_tun",   vb.pid_tuned);
+  vb.pid_kp          = vbPrefs.getFloat  ("pid_kp",    vb.pid_kp);
+  vb.pid_ki          = vbPrefs.getFloat  ("pid_ki",    vb.pid_ki);
+  vb.pid_kd          = vbPrefs.getFloat  ("pid_kd",    vb.pid_kd);
+  vb.pid_tuned       = vbPrefs.getBool   ("pid_tun",   vb.pid_tuned);
+  vb.ctrl_mode       = vbPrefs.getUChar  ("ctrl_mode", vb.ctrl_mode);
+  vb.ctrl_timeout_ms = vbPrefs.getUShort ("ctrl_tms",  vb.ctrl_timeout_ms);
   for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++) {
     vb.ssid[i] = vbPrefs.getString(("ssid" + String(i)).c_str(), "");
     vb.pass[i] = vbPrefs.getString(("pass" + String(i)).c_str(), "");
   }
   vbPrefs.end();
-  // Propagate NVS gains into live globals
-  g_pid_kp = vb.pid_kp; g_pid_ki = vb.pid_ki; g_pid_kd = vb.pid_kd;
+  // Propagate NVS gains and mode into live globals
+  g_pid_kp         = vb.pid_kp; g_pid_ki = vb.pid_ki; g_pid_kd = vb.pid_kd;
+  g_ctrl_mode       = vb.ctrl_mode;
+  g_ctrl_timeout_ms = vb.ctrl_timeout_ms;
 }
 
 void vb_save() {
@@ -150,6 +159,8 @@ void vb_save() {
   vbPrefs.putFloat  ("pid_ki",    vb.pid_ki);
   vbPrefs.putFloat  ("pid_kd",    vb.pid_kd);
   vbPrefs.putBool   ("pid_tun",   vb.pid_tuned);
+  vbPrefs.putUChar  ("ctrl_mode", vb.ctrl_mode);
+  vbPrefs.putUShort ("ctrl_tms",  vb.ctrl_timeout_ms);
   vbPrefs.putBool   ("mq_en",     vb.mqtt_en);
   vbPrefs.putString ("mq_host",   vb.mqtt_host);
   vbPrefs.putUShort ("mq_port",   vb.mqtt_port);
@@ -291,6 +302,7 @@ void vb_fill_status(JsonDocument &d) {
   d["trip3"]    = vb.trip[2];
   d["set1"]     = g_setpoint_mV / 1000.0f;
   d["ts"]       = (uint64_t)millis();
+  d["ctrl_mode"] = g_ctrl_mode;
   static const char* const STATE_STR[] = {"idle","settling","running","converged","tuning"};
   d["pid_state"] = STATE_STR[min((uint8_t)4, (uint8_t)g_vctrl_state)];
   d["pid_kp"]    = g_pid_kp;
@@ -455,6 +467,9 @@ void vb_register_routes() {
     auto pid = d["pid"].to<JsonObject>();
       pid["kp"] = g_pid_kp; pid["ki"] = g_pid_ki; pid["kd"] = g_pid_kd;
       pid["tuned"] = vb.pid_tuned;
+    auto ctrl = d["ctrl"].to<JsonObject>();
+      ctrl["mode"]       = vb.ctrl_mode;
+      ctrl["timeout_ms"] = vb.ctrl_timeout_ms;
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
   });
@@ -521,6 +536,11 @@ void vb_register_routes() {
           if (p["kp"].is<float>()) { vb.pid_kp = p["kp"]; g_pid_kp = vb.pid_kp; }
           if (p["ki"].is<float>()) { vb.pid_ki = p["ki"]; g_pid_ki = vb.pid_ki; }
           if (p["kd"].is<float>()) { vb.pid_kd = p["kd"]; g_pid_kd = vb.pid_kd; }
+        }
+        if (s["ctrl"].is<JsonObject>()) {
+          JsonObject c = s["ctrl"];
+          if (c["mode"].is<int>())       { vb.ctrl_mode       = c["mode"];       g_ctrl_mode       = vb.ctrl_mode; }
+          if (c["timeout_ms"].is<int>()) { vb.ctrl_timeout_ms = c["timeout_ms"]; g_ctrl_timeout_ms = vb.ctrl_timeout_ms; }
         }
         if (s["mqtt"].is<JsonObject>()) {
           JsonObject m = s["mqtt"];

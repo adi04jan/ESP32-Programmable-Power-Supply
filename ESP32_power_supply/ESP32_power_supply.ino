@@ -57,11 +57,13 @@ volatile uint32_t g_measured_mV  = 0;
 volatile bool     g_ctrl_output1 = false;
 
 // PID state — written by voltageControlTask, read by firmware-additions.h
-volatile float   g_pid_kp       = 0.50f;
-volatile float   g_pid_ki       = 0.10f;
-volatile float   g_pid_kd       = 0.02f;
-volatile uint8_t g_vctrl_state  = 0;    // 0=idle 1=settling 2=pid 3=converged 4=tuning
-volatile bool    g_autotune_req = false;
+volatile float    g_pid_kp          = 0.50f;
+volatile float    g_pid_ki          = 0.10f;
+volatile float    g_pid_kd          = 0.02f;
+volatile uint8_t  g_vctrl_state     = 0;    // 0=idle 1=settling 2=pid 3=converged 4=tuning
+volatile bool     g_autotune_req    = false;
+volatile uint8_t  g_ctrl_mode       = 0;    // 0=quick 1=continuous 2=timed
+volatile uint32_t g_ctrl_timeout_ms = 5000;
 
 // =============================================================================
 //   ADC averaging (rolling buffer)
@@ -134,13 +136,34 @@ static uint32_t vctrl_sample() {
 bool pid_autotune(uint32_t target);
 
 void voltageControlTask(void* pvParameters) {
-  static const float DT    = 0.07f;  // PID dt: 20ms ADC + 50ms delay
-  float    integral   = 0.0f;
-  float    prev_err   = 0.0f;
-  uint32_t lastTarget = g_target_mV;
-  uint32_t settle_t   = 0;
-  int      conv_count = 0;
-  uint8_t  state      = 0;
+  static const float DT = 0.07f;  // PID dt: 20ms ADC + 50ms delay
+
+  float    integral    = 0.0f;
+  float    prev_err    = 0.0f;
+  uint32_t lastTarget  = g_target_mV;
+  uint32_t settle_t    = 0;
+  int      conv_count  = 0;
+  uint8_t  state       = 0;
+  bool     pre_discharge = false;  // true while waiting for Vout to drop before applying target R
+  uint32_t pending_r     = 0;      // R to apply once pre-discharge completes
+
+  // Calibration cache: maps target_mV → converged R value (Quick + Timed modes)
+  struct CalibEntry { uint32_t target_mV; uint32_t r_val; };
+  static CalibEntry calib_cache[8] = {};
+  static uint8_t   calib_next     = 0;
+
+  // Timed-mode helpers
+  uint32_t timed_start  = 0;
+  uint32_t best_r       = 0;
+  uint32_t best_err_abs = 0xFFFFFFFFu;
+
+  // Minimum R allowed for a given target — enforces hard Vout ceiling of target+300mV
+  auto r_overvolt_floor = [](uint32_t tgt_mV) -> float {
+    uint32_t ceiling_mV = tgt_mV + 300u;
+    if (ceiling_mV <= (uint32_t)DC_V_REF) return (float)DC_R2_REF;
+    float r = (float)DC_R2_REF * (float)DC_V_REF / (float)(ceiling_mV - DC_V_REF) - (float)MCPWIPEROHMS;
+    return (r > 0.0f) ? r : 0.0f;
+  };
 
   for (;;) {
     if (g_autotune_req) {
@@ -148,61 +171,156 @@ void voltageControlTask(void* pvParameters) {
       g_vctrl_state  = 4;
       pid_autotune(g_target_mV);
       integral = 0; prev_err = 0; conv_count = 0;
+      best_r = 0; best_err_abs = 0xFFFFFFFFu;
+      pre_discharge = false; pending_r = 0;
       lastTarget = 0;
       state = 0; g_vctrl_state = 0;
       continue;
     }
 
+    uint8_t  mode   = g_ctrl_mode;
     uint32_t target = g_target_mV;
+
+    // Sample ADC first so we have a fresh reading for pre-discharge decisions
+    g_measured_mV = vctrl_sample();
+
     if (target != lastTarget) {
-      lastTarget = target;
-      integral = 0; prev_err = 0; conv_count = 0;
+      lastTarget   = target;
+      integral     = 0; prev_err = 0; conv_count = 0;
+      best_r       = 0; best_err_abs = 0xFFFFFFFFu;
+      pre_discharge = false; pending_r = 0;
+
       if (target > (uint32_t)DC_V_REF) {
-        long r_calc = (long)((DC_R2_REF * DC_V_REF) / (target - DC_V_REF)) - MCPWIPEROHMS;
-        uint32_t r_val = (r_calc > 0) ? (uint32_t)r_calc : 0;
-        i2cDP.setResistance(r_val);
-        Serial.printf("[VCtrl] target=%umV R=%u\n", target, r_val);
+        // Conservative starting R: use formula for (target-300mV) to guarantee undershoot on entry
+        uint32_t safe_tgt = (target > (uint32_t)(DC_V_REF + 300)) ? (target - 300u) : target;
+        long r_calc = (long)((DC_R2_REF * DC_V_REF) / (safe_tgt - DC_V_REF)) - MCPWIPEROHMS;
+        uint32_t formula_r = (r_calc > 0) ? (uint32_t)r_calc : 0;
+
+        // Check calibration cache — only use if it won't overshoot
+        uint32_t r_val     = formula_r;
+        bool     cache_hit = false;
+        float    r_floor   = r_overvolt_floor(target);
+        for (int i = 0; i < 8; i++) {
+          if (calib_cache[i].target_mV == target && calib_cache[i].r_val > 0) {
+            if ((float)calib_cache[i].r_val >= r_floor) {
+              r_val     = calib_cache[i].r_val;
+              cache_hit = true;
+            }
+            break;
+          }
+        }
+
+        // If current Vout is already above target+300mV, pre-discharge to max R first
+        if (g_measured_mV > target + 300u) {
+          i2cDP.setResistance(DC_R2_REF);  // max R → Vout ~2.47V minimum
+          pre_discharge = true;
+          pending_r     = r_val;
+          Serial.printf("[VCtrl] pre-discharge: meas=%umV tgt=%umV\n", g_measured_mV, target);
+        } else {
+          i2cDP.setResistance(r_val);
+          Serial.printf("[VCtrl] target=%umV R=%u%s\n", target, r_val, cache_hit ? " (cached)" : "");
+        }
       }
       settle_t = millis();
       state = 1; g_vctrl_state = 1;
     }
 
-    // ADC: 20 ms regardless of state (display stays live)
-    g_measured_mV = vctrl_sample();
-
-    // After 100 ms settle, enter PID
-    if (state == 1 && millis() - settle_t >= 100) {
-      state = 2; g_vctrl_state = 2;
+    // State 1: settle (or wait for pre-discharge to complete)
+    if (state == 1) {
+      if (pre_discharge) {
+        if (g_measured_mV <= target + 300u) {
+          i2cDP.setResistance(pending_r);
+          pre_discharge = false;
+          settle_t = millis();  // restart settle timer from here
+          Serial.printf("[VCtrl] pre-discharge done: meas=%umV R=%u\n", g_measured_mV, pending_r);
+        }
+        // else keep sampling until voltage drops — don't advance state
+      } else if (millis() - settle_t >= 300) {
+        timed_start = millis();
+        state = 2; g_vctrl_state = 2;
+      }
     }
 
     if (state == 2) {
       if (target > (uint32_t)DC_V_REF) {
-        float error = (float)target - (float)g_measured_mV;
+        float    error    = (float)target - (float)g_measured_mV;
+        float    err_abs  = fabsf(error);
+        uint32_t cur_r    = i2cDP.calcResistance();
 
-        // Fast-path: formula landed close enough — skip PID iterations
-        if (fabsf(error) < 100.0f) {
-          if (++conv_count >= 2) { state = 3; g_vctrl_state = 3; }
-        } else {
-          conv_count = 0;
-          float r2    = (float)i2cDP.calcResistance();
-          integral   += error * DT;
-          if (g_pid_ki > 0.0f) {
-            float lim = 3000.0f / g_pid_ki;
-            integral  = constrain(integral, -lim, lim);
-          }
+        // Track best result — only when NOT in overvoltage (error >= -300 means Vout <= target+300)
+        if (error >= -300.0f && (uint32_t)err_abs < best_err_abs) {
+          best_err_abs = (uint32_t)err_abs;
+          best_r       = cur_r;
+        }
+
+        auto pid_step = [&]() {
+          float r2  = (float)cur_r;
+          integral += error * DT;
+          // Prevent upward overshoot: zero positive integral the moment Vout exceeds target.
+          // Without this, the integral built while stuck at a sub-step value fires all at once
+          // and overshoots by 1-2 MCP4017 steps when the wiper finally advances.
+          if (error < 0.0f && integral > 0.0f) integral = 0.0f;
+          // Tight anti-windup: ±300 mV × cycles budget (prevents slow build-up accumulation)
+          integral = constrain(integral, -300.0f, 300.0f);
           float deriv  = (error - prev_err) / DT;
-          prev_err = error;
+          prev_err     = error;
           float v_corr = g_pid_kp * error + g_pid_ki * integral + g_pid_kd * deriv;
+          // Asymmetric clamp: fast downward (Vout too high), slow upward (≤100 mV/step)
+          v_corr = constrain(v_corr, -2000.0f, 100.0f);
           float new_r  = constrain(r2 - v_corr * r2 * r2 / ((float)DC_V_REF * (float)DC_R2_REF),
                                    0.0f, (float)DC_R2_REF);
+          // Hard floor: never allow R that would produce Vout > target+300mV
+          // Add one MCP4017 step (79Ω) to absorb quantization rounding toward lower resistance
+          float r_floor = r_overvolt_floor(target) + 79.0f;
+          if (r_floor > 0.0f && new_r < r_floor) new_r = r_floor;
           i2cDP.setResistance((uint32_t)new_r);
+        };
+
+        auto cache_store = [&](uint32_t r) {
+          // Only cache if within 500mV above and 300mV below target (no overvoltage allowed)
+          if (error < -300.0f || error > 500.0f) return;
+          for (int i = 0; i < 8; i++) {
+            if (calib_cache[i].target_mV == target) { calib_cache[i].r_val = r; return; }
+          }
+          calib_cache[calib_next] = { target, r };
+          calib_next = (calib_next + 1) & 7;
+        };
+
+        if (mode == 0) {
+          // --- Quick: PID until <150 mV for 2 consecutive reads, then freeze ---
+          if (err_abs < 150.0f) {
+            if (++conv_count >= 2) { cache_store(cur_r); state = 3; g_vctrl_state = 3; }
+          } else {
+            conv_count = 0;
+            pid_step();
+          }
+        } else if (mode == 1) {
+          // --- Continuous: PID until <100 mV for 2 consecutive reads ---
+          if (err_abs < 100.0f) {
+            if (++conv_count >= 2) { state = 3; g_vctrl_state = 3; }
+          } else {
+            conv_count = 0;
+            pid_step();
+          }
+        } else {
+          // --- Timed: PID for ctrl_timeout_ms, then freeze at best R ---
+          uint32_t elapsed = millis() - timed_start;
+          bool     timeout = elapsed >= g_ctrl_timeout_ms;
+          if (timeout || err_abs < 100.0f) {
+            uint32_t freeze_r = (best_r > 0) ? best_r : cur_r;
+            if (timeout && best_r > 0) i2cDP.setResistance(freeze_r);
+            cache_store(freeze_r);
+            state = 3; g_vctrl_state = 3;
+          } else {
+            pid_step();
+          }
         }
       } else {
         state = 3; g_vctrl_state = 3;
       }
     }
 
-    // Fast loop while PID active, slow while monitoring
+    // Fast loop while PID active, slow while idle/converged/pre-discharge
     vTaskDelay(pdMS_TO_TICKS(state == 2 ? 50 : 200));
   }
 }
