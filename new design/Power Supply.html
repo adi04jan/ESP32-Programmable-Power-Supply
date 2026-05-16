@@ -1310,7 +1310,7 @@ function paintChannels(s){
     el.querySelector(".state-text").textContent = on ? "ON" : "OFF";
     const meas = el.querySelector("[data-meas]");
     const v = emaFilter(c.n, s["voltage"+c.n] || 0);
-    meas.textContent = v.toFixed(3);
+    meas.textContent = v.toFixed(1);
 
     if (c.hasSlider){
       const set = s.set1 || 0;
