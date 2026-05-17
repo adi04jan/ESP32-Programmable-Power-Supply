@@ -1,0 +1,23 @@
+# Credentials — never commit
+ESP32_power_supply/credential.h
+
+# Arduino build artifacts
+ESP32_power_supply/build/
+*.elf
+*.map
+
+# OTA test server
+ota_test_server/
+
+# Screenshots and test images
+*.png
+*.jpg
+
+# Tool internals
+.claude/
+.playwright-mcp/
+docs/
+
+# OS
+Thumbs.db
+.DS_Store
