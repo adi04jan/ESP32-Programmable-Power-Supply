@@ -13,6 +13,11 @@ ota_test_server/
 *.png
 *.jpg
 
+# New design drafts (working copies, not part of main firmware)
+new design/*.ino
+new design/firmware-additions.h
+new design/README.md
+
 # Tool internals
 .claude/
 .playwright-mcp/
