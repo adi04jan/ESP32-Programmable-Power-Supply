@@ -1649,15 +1649,20 @@ let selectedSSID = null;
 async function wifiScan(){
   const btn = $("#wifi-scan"), lbl = $("#wifi-scan-lbl");
   btn.disabled = true; lbl.innerHTML = `<span class="spin"></span> Scanning`;
+  const scanStatus = $("#wifi-scan-status");
   try{
-    let r = await api("/api/wifi/scan");
-    for (let i = 0; r.scanning && i < 10; i++){
-      await new Promise(res => setTimeout(res, 700));
-      r = await api("/api/wifi/scan");
+    // Use raw fetch so failures show a real error rather than falling back to demo data
+    const doFetch = () => fetch("/api/wifi/scan").then(r => r.json()).catch(() => null);
+    let r = await doFetch();
+    if (!r) { scanStatus.textContent = "Scan failed — check connection and retry"; return; }
+    for (let i = 0; r && r.scanning && i < 20; i++){
+      await new Promise(res => setTimeout(res, 1500));
+      r = await doFetch();
     }
+    if (!r || r.scanning) { scanStatus.textContent = "Scan timed out — tap Scan to retry"; return; }
     scannedNets = r.networks || [];
     renderSSIDs();
-    $("#wifi-scan-status").textContent = `Last scan: ${new Date().toLocaleTimeString()} · ${scannedNets.length} networks`;
+    scanStatus.textContent = `Last scan: ${new Date().toLocaleTimeString()} · ${scannedNets.length} networks`;
   } finally { btn.disabled = false; lbl.textContent = "Scan"; }
 }
 

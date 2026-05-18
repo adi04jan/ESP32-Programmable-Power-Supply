@@ -51,6 +51,37 @@ extern volatile uint8_t  g_ctrl_mode;
 extern volatile uint32_t g_ctrl_timeout_ms;
 
 // =============================================================================
+//   WiFi manager — globals shared between manager task, scan task, HTTP handlers
+// =============================================================================
+static volatile int16_t  g_scan_result    = WIFI_SCAN_FAILED; // -2=idle,-1=running,>=0=count
+static volatile bool     g_scan_busy      = false;
+static volatile bool     g_wifi_conn_busy = false; // true during any connection attempt
+static SemaphoreHandle_t g_wifi_ready     = nullptr; // given when initial WiFi phase ends
+
+// Forward declaration (defined in captive portal section below)
+void vb_start_captive_ap();
+
+// ---------- Scan task ----------
+// Runs WiFi.scanNetworks() (blocking) on its own stack so it never executes on
+// the lwIP / AsyncWebServer task.  CRITICAL: esp_wifi_connect() called during an
+// active scan silently kills the scan and never fires WIFI_EVENT_SCAN_DONE —
+// waitStatusBits then blocks for 60 s.  vb_trigger_scan() guards against this.
+static void _wfScanTask(void*) {
+  WiFi.scanDelete();
+  int16_t n = WiFi.scanNetworks(false, true);  // blocking, include hidden SSIDs
+  g_scan_result = (n < 0) ? WIFI_SCAN_FAILED : n;
+  g_scan_busy   = false;
+  vTaskDelete(NULL);
+}
+
+static void vb_trigger_scan() {
+  if (g_scan_busy || g_wifi_conn_busy) return;
+  g_scan_busy   = true;
+  g_scan_result = WIFI_SCAN_RUNNING;
+  xTaskCreate(_wfScanTask, "wfscan", 4096, nullptr, 1, nullptr);
+}
+
+// =============================================================================
 //   Settings + persistent storage
 // =============================================================================
 struct VBSettings {
@@ -205,25 +236,43 @@ void vb_factory_reset() {
 DNSServer vb_dns;
 bool vb_in_captive = false;
 
-bool vb_try_saved_wifi(uint32_t timeout_ms = 12000) {
+// ---------- Connection helpers (must be called from a FreeRTOS task) ----------
+
+// Try one SSID for up to timeoutMs; returns true on success.
+static bool _trySSID(const char* ssid, const char* pass, uint32_t timeoutMs) {
+  WiFi.begin(ssid, pass);
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < timeoutMs)
+    vTaskDelay(pdMS_TO_TICKS(100));
+  if (WiFi.status() == WL_CONNECTED) return true;
+  WiFi.disconnect(false, false);
+  vTaskDelay(pdMS_TO_TICKS(200));  // let the stack reach idle before next attempt
+  return false;
+}
+
+// Try every saved SSID in order; holds g_wifi_conn_busy for the full duration so
+// the scan task won't start while a connection attempt is in progress.
+static bool _tryAllSSIDs(uint32_t perSsidMs) {
+  g_wifi_conn_busy = true;
   for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++) {
     if (vb.ssid[i].isEmpty()) continue;
-    WiFi.begin(vb.ssid[i].c_str(), vb.pass[i].c_str());
-    uint32_t t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < timeout_ms) delay(150);
-    if (WiFi.status() == WL_CONNECTED) return true;
-    WiFi.disconnect();
+    if (_trySSID(vb.ssid[i].c_str(), vb.pass[i].c_str(), perSsidMs)) {
+      g_wifi_conn_busy = false;
+      return true;
+    }
   }
+  g_wifi_conn_busy = false;
   return false;
 }
 
 void vb_start_captive_ap() {
-  WiFi.mode(WIFI_AP_STA);   // STA needed so scanNetworks() still works in AP mode
+  WiFi.mode(WIFI_AP_STA);   // STA interface required for scanNetworks() in AP mode
   String apName = "Voltbench-" + String((uint32_t)ESP.getEfuseMac(), HEX);
   WiFi.softAP(apName.c_str());
   vb_dns.start(53, "*", WiFi.softAPIP());
   vb_in_captive = true;
   Serial.printf("Captive AP: %s @ %s\n", apName.c_str(), WiFi.softAPIP().toString().c_str());
+  // Scan is triggered by wifiMgrTask after an 800 ms settle delay, not here
 }
 
 // =============================================================================
@@ -578,14 +627,17 @@ void vb_register_routes() {
     req->send(200, "application/json", "{\"ok\":true}");
   });
 
-  // Wi-Fi scan
+  // Wi-Fi scan — results come from a dedicated FreeRTOS task (blocking scan).
+  // Never start a scan while a WiFi connection attempt is in progress; calling
+  // esp_wifi_connect() during a scan kills it silently (no SCAN_DONE event).
   server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *req) {
-    int n = WiFi.scanComplete();
-    if (n == WIFI_SCAN_FAILED || n == -2) { WiFi.scanNetworks(true); req->send(202, "application/json", "{\"scanning\":true}"); return; }
-    if (n == WIFI_SCAN_RUNNING)            { req->send(202, "application/json", "{\"scanning\":true}"); return; }
+    if (g_wifi_conn_busy) { req->send(202, "application/json", "{\"scanning\":true}"); return; }
+    int16_t n = g_scan_result;
+    if (n == WIFI_SCAN_RUNNING) { req->send(202, "application/json", "{\"scanning\":true}"); return; }
+    if (n == WIFI_SCAN_FAILED)  { vb_trigger_scan(); req->send(202, "application/json", "{\"scanning\":true}"); return; }
     JsonDocument d;
     auto arr = d["networks"].to<JsonArray>();
-    for (int i = 0; i < n; i++) {
+    for (int16_t i = 0; i < n; i++) {
       auto o = arr.add<JsonObject>();
       o["ssid"] = WiFi.SSID(i);
       o["rssi"] = WiFi.RSSI(i);
@@ -593,8 +645,7 @@ void vb_register_routes() {
     }
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
-    WiFi.scanDelete();
-    WiFi.scanNetworks(true);
+    g_scan_result = WIFI_SCAN_FAILED;  // mark stale so next request re-scans
   });
 
   // Wi-Fi connect
@@ -607,12 +658,20 @@ void vb_register_routes() {
     req->send(200, "application/json", "{\"ok\":true}");
     static String s_ssid = ssid, s_pass = pass;
     s_ssid = ssid; s_pass = pass;
-    xTaskCreatePinnedToCore([](void*) {
-      vTaskDelay(pdMS_TO_TICKS(800));
-      WiFi.disconnect();
+    xTaskCreate([](void*) {
+      g_wifi_conn_busy = true;
+      vTaskDelay(pdMS_TO_TICKS(500));
+      WiFi.setAutoReconnect(false);
+      WiFi.disconnect(false, false);
+      vTaskDelay(pdMS_TO_TICKS(300));
       WiFi.begin(s_ssid.c_str(), s_pass.c_str());
+      uint32_t t0 = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000)
+        vTaskDelay(pdMS_TO_TICKS(100));
+      if (WiFi.status() == WL_CONNECTED) WiFi.setAutoReconnect(true);
+      g_wifi_conn_busy = false;
       vTaskDelete(NULL);
-    }, "wifiSwitch", 4096, NULL, 1, NULL, 0);
+    }, "wifiSwitch", 4096, NULL, 1, NULL);
   });
 
   // Wi-Fi forget
@@ -681,14 +740,64 @@ void vb_register_routes() {
 //   Setup / loop helpers called from the main sketch
 // =============================================================================
 void vb_on_wifi_event(WiFiEvent_t event) {
-  if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP && vb_in_captive) {
-    vb_dns.stop();
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    vb_in_captive = false;
+  if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    if (vb_in_captive) {
+      vb_dns.stop();
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      vb_in_captive = false;
+      MDNS.begin(vb.mdns.c_str());
+      Serial.printf("Joined %s — captive AP down. IP=%s\n",
+                    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    } else {
+      Serial.printf("WiFi reconnected: %s @ %s\n",
+                    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    }
+  }
+}
+
+// ---------- WiFi manager task ----------
+// Owns the entire connection lifecycle so loop() never blocks on WiFi calls.
+// Priority 2 (same as voltageControlTask) — time-shares core 0 via vTaskDelay yields.
+static void wifiMgrTask(void*) {
+  WiFi.setAutoReconnect(false);   // we drive all reconnection ourselves
+  WiFi.mode(WIFI_STA);
+
+  // Boot: try every saved SSID with a 5 s timeout (was 12 s; reduces AP-start delay)
+  bool ok = _tryAllSSIDs(5000);
+
+  if (ok) {
+    WiFi.setAutoReconnect(true);
     MDNS.begin(vb.mdns.c_str());
-    Serial.printf("Joined %s — captive AP shut down. IP=%s\n",
+    Serial.printf("WiFi OK: %s @ %s\n",
                   WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+  } else {
+    vb_start_captive_ap();
+    // Wait 800 ms for the AP radio to settle before starting the first scan.
+    // Calling esp_wifi_scan_start() immediately after softAP() can return
+    // ESP_ERR_WIFI_STATE and leave the scan permanently stuck.
+    vTaskDelay(pdMS_TO_TICKS(800));
+    vb_trigger_scan();
+  }
+
+  // Signal vb_setup() — it has been blocking on this semaphore
+  xSemaphoreGive(g_wifi_ready);
+
+  // Background loop: periodically retry saved SSIDs while in captive portal mode.
+  // NEVER runs concurrently with g_scan_busy; doing so would call esp_wifi_connect()
+  // mid-scan which silently kills the scan (no WIFI_EVENT_SCAN_DONE ever fires).
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(60000));   // retry interval
+    if (!vb_in_captive) continue;
+
+    // Politely wait for any in-progress scan to finish before connecting
+    while (g_scan_busy) vTaskDelay(pdMS_TO_TICKS(300));
+    if (!vb_in_captive) continue;       // re-check: scan may have triggered connect
+
+    WiFi.setAutoReconnect(false);
+    bool reconnected = _tryAllSSIDs(5000);
+    if (reconnected) WiFi.setAutoReconnect(true);
+    // vb_on_wifi_event handles AP teardown when GOT_IP fires after reconnect
   }
 }
 
@@ -696,20 +805,21 @@ void vb_setup() {
   vb_load();
   if (vb.auth_token.isEmpty()) { vb.auth_token = vb_make_token(); vb_save(); }
   WiFi.onEvent(vb_on_wifi_event);
-  bool wifi_ok = vb_try_saved_wifi();
-  if (!wifi_ok) vb_start_captive_ap();
-  if (!vb_in_captive) MDNS.begin(vb.mdns.c_str());
+
+  g_wifi_ready = xSemaphoreCreateBinary();
+  // Stack 8 KB — WiFi.begin() and the IDF scan stack are deeper than they look
+  xTaskCreate(wifiMgrTask, "wifiMgr", 8192, nullptr, 2, nullptr);
+
+  // Block until wifiMgrTask finishes its initial phase (max ~25 s: 4 SSIDs × 5 s + margin)
+  xSemaphoreTake(g_wifi_ready, pdMS_TO_TICKS(30000));
+
   vb_register_routes();
   vb_mqtt_setup();
 }
 
 void vb_loop() {
   if (vb_in_captive) vb_dns.processNextRequest();
-  static uint32_t lastRetry = 0;
-  if (vb_in_captive && millis() - lastRetry > 30000) {
-    lastRetry = millis();
-    vb_try_saved_wifi(8000);
-  }
+  // WiFi connection management is handled entirely by wifiMgrTask — nothing here.
   vb_guard_tick();
   vb_push_status();
   vb_mqtt_loop();
