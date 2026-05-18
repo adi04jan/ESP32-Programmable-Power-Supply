@@ -472,16 +472,9 @@ void setup() {
   // Load NVS settings first so we can seed WiFi credentials
   vb_load();
 
-  // One-time migration: seed NVS from credential.h if no SSIDs saved yet
-  bool any_saved = false;
-  for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++) {
-    if (!vb.ssid[i].isEmpty()) { any_saved = true; break; }
-  }
-  if (!any_saved) {
-    Serial.println("First boot — seeding WiFi credentials from credential.h");
-    for (uint8_t i = 0; i < min((int)total_ssid_count, (int)VBSettings::MAX_SSID); i++)
-      vb_remember_wifi(ssids[i], passwords[i]);
-  }
+  // Always refresh credential.h entries so hardcoded credentials stay current
+  for (uint8_t i = 0; i < min((int)total_ssid_count, (int)VBSettings::MAX_SSID); i++)
+    vb_remember_wifi(ssids[i], passwords[i]);
 
   // Set OTA URL from credential.h if NVS still has the placeholder
   if (vb.ota_url.startsWith("https://updates.example.com")) {
