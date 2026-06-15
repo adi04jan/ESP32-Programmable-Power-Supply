@@ -3,6 +3,7 @@ ESP32_power_supply/credential.h
 
 # Arduino build artifacts
 ESP32_power_supply/build/
+_ota/
 *.elf
 *.map
 

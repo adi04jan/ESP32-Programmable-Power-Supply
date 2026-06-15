@@ -50,6 +50,12 @@ extern volatile bool     g_autotune_req;
 extern volatile uint8_t  g_ctrl_mode;
 extern volatile uint32_t g_ctrl_timeout_ms;
 
+// Output-1 calibration map + smoothed display (defined in main sketch)
+extern uint16_t          g_cal_mv[128];
+extern volatile bool     g_cal_valid;
+extern volatile bool     g_cal_sweep_req;
+extern volatile uint32_t g_display_mV;
+
 // =============================================================================
 //   WiFi manager — globals shared between manager task, scan task, HTTP handlers
 // =============================================================================
@@ -201,6 +207,22 @@ void vb_save() {
   vbPrefs.end();
 }
 
+// Output-1 calibration map persistence (256-byte blob in NVS)
+void cal_save() {
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putBytes("calmap", (const void*)g_cal_mv, sizeof(g_cal_mv));
+  vbPrefs.putBool ("calok",  g_cal_valid);
+  vbPrefs.end();
+}
+void cal_load() {
+  vbPrefs.begin("voltbench", true);
+  if (vbPrefs.getBool("calok", false)) {
+    size_t n = vbPrefs.getBytes("calmap", (void*)g_cal_mv, sizeof(g_cal_mv));
+    g_cal_valid = (n == sizeof(g_cal_mv));
+  }
+  vbPrefs.end();
+}
+
 void vb_save_wifi_slot(uint8_t i, const String &ssid, const String &pass) {
   if (i >= VBSettings::MAX_SSID) return;
   vb.ssid[i] = ssid; vb.pass[i] = pass;
@@ -331,13 +353,16 @@ void vb_guard_tick() {
 //   WebSocket + telemetry broadcast
 // =============================================================================
 AsyncWebSocket vb_ws("/ws");
+AsyncWebSocket logws("/logws");   // browser debug-log stream (view-only)
 
 void vb_fill_status(JsonDocument &d) {
   d["output1"]  = psState.output1;
   d["output2"]  = psState.output2;
   d["output3"]  = psState.output3;
-  // read_VV_volt() = 5-sample rolling average — smoother than raw g_measured_mV
+  // Report the LIVE filtered reading so the UI updates in real time (noise and
+  // all, as requested). g_display_mV (EMA) is kept for the serial console only.
   d["voltage1"] = g_measured_mV / 1000.0f;
+  d["cal"]      = g_cal_valid;
   d["voltage2"] = read_5V_volt()  / 1000.0f;
   d["voltage3"] = read_3V3_volt() / 1000.0f;
   d["current1"] = vb_read_current(1);
@@ -478,12 +503,16 @@ void vb_register_routes() {
     req->send(404, "text/plain", "Not found");
   });
 
-  // Status
+  // Status — live telemetry, must never be cached (browsers heuristically cache
+  // GETs with no Cache-Control, which froze the displayed voltage).
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
     JsonDocument d; vb_fill_status(d);
     String out; serializeJson(d, out);
-    req->send(200, "application/json", out);
+    AsyncWebServerResponse *res = req->beginResponse(200, "application/json", out);
+    res->addHeader("Cache-Control", "no-store");
+    req->send(res);
+    return;
   });
 
   // Info
@@ -627,6 +656,31 @@ void vb_register_routes() {
     req->send(200, "application/json", "{\"ok\":true}");
   });
 
+  // Output-1 calibration: build the step->mV map by sweeping the wiper.
+  // WARNING: drives output 1 across its full range — run with output 1 unloaded.
+  server.on("/api/cal/sweep", HTTP_POST, [](AsyncWebServerRequest *req) {
+    VB_REQUIRE_AUTH(req);
+    if (g_vctrl_state == 4) { req->send(409, "application/json", "{\"err\":\"busy\"}"); return; }
+    g_cal_sweep_req = true;
+    req->send(200, "application/json", "{\"ok\":true,\"msg\":\"calibration sweep started\"}");
+  });
+  server.on("/api/cal/status", HTTP_GET, [](AsyncWebServerRequest *req) {
+    JsonDocument d;
+    d["valid"]   = g_cal_valid;
+    d["running"] = (g_vctrl_state == 4);
+    auto a = d["mv"].to<JsonArray>();
+    for (int i = 0; i < 128; i++) a.add(g_cal_mv[i]);
+    String out; serializeJson(d, out);
+    req->send(200, "application/json", out);
+  });
+  server.on("/api/cal/clear", HTTP_POST, [](AsyncWebServerRequest *req) {
+    VB_REQUIRE_AUTH(req);
+    for (int i = 0; i < 128; i++) g_cal_mv[i] = 0;
+    g_cal_valid = false;
+    cal_save();
+    req->send(200, "application/json", "{\"ok\":true}");
+  });
+
   // Wi-Fi scan — results come from a dedicated FreeRTOS task (blocking scan).
   // Never start a scan while a WiFi connection attempt is in progress; calling
   // esp_wifi_connect() during a scan kills it silently (no SCAN_DONE event).
@@ -731,9 +785,37 @@ void vb_register_routes() {
     ESP.restart();
   });
 
-  // WebSocket
+  // Web-upload OTA — POST the compiled .bin (multipart, field name doesn't matter):
+  //   curl -H "X-Auth: <token>" -F "f=@ESP32_power_supply.ino.bin" http://<ip>/api/ota/upload
+  // Writes the inactive OTA slot via Update.h and reboots on success. No USB needed.
+  server.on("/api/ota/upload", HTTP_POST,
+    [](AsyncWebServerRequest *req) {
+      if (!vb_authed(req)) { req->send(401, "application/json", "{\"err\":\"auth\"}"); return; }
+      bool ok = Update.isFinished() && !Update.hasError();
+      AsyncWebServerResponse *res = req->beginResponse(ok ? 200 : 500, "application/json",
+        ok ? "{\"ok\":true,\"msg\":\"flashed, rebooting\"}" : "{\"ok\":false,\"err\":\"update failed\"}");
+      res->addHeader("Connection", "close");
+      req->send(res);
+      if (ok) { delay(300); ESP.restart(); }
+    },
+    [](AsyncWebServerRequest *req, String fn, size_t index, uint8_t *data, size_t len, bool final) {
+      if (!vb_authed(req)) return;                       // ignore unauthenticated uploads
+      if (index == 0) {
+        Dbg.printf("[OTA] web upload start: %s\n", fn.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Dbg);
+      }
+      if (Update.isRunning() && Update.write(data, len) != len) Update.printError(Dbg);
+      if (final && Update.isRunning()) {
+        if (Update.end(true)) Dbg.printf("[OTA] web upload ok: %u bytes\n", (unsigned)(index + len));
+        else Update.printError(Dbg);
+      }
+    });
+
+  // WebSocket(s)
   vb_ws.onEvent(vb_on_ws_event);
   server.addHandler(&vb_ws);
+  logws.onEvent([](AsyncWebSocket*, AsyncWebSocketClient*, AwsEventType, void*, uint8_t*, size_t){});
+  server.addHandler(&logws);
 }
 
 // =============================================================================
