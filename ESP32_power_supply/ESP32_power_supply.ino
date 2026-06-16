@@ -14,6 +14,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <WiFiClientSecure.h> // HTTPS pull-OTA (GitHub release assets)
 #include <Update.h>          // web-upload OTA (Update.write/end)
 #include <ArduinoOTA.h>      // push OTA from arduino-cli / IDE network port
 #include "driver/rtc_io.h"
@@ -23,6 +24,12 @@
 #include "credential.h"     // ssids[], passwords[], base_url (initial seed only)
 
 #define CURRENT_FIRMWARE_VERSION "2.0.0"
+
+// Pull-OTA source: this repo's GitHub "latest release" assets. The device fetches
+// <base>version.txt, and if it differs from CURRENT_FIRMWARE_VERSION, downloads
+// <base>firmware_<latest>.bin. /releases/latest/download/ always resolves to the
+// newest release, so each new release is auto-discovered.
+#define OTA_GITHUB_URL "https://github.com/adi04jan/ESP32-Programmable-Power-Supply/releases/latest/download/"
 
 #define DC_R2_REF          10000
 #define DC_V_REF           1235
@@ -425,23 +432,45 @@ void voltageControlTask(void* pvParameters) {
 //   OTA — uses ESP32 core HTTPUpdate (HTTP or HTTPS, no extra library needed)
 // =============================================================================
 void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
-  HTTPClient http;
+  bool   https       = ota_url.startsWith("https");
   String version_url = ota_url + "version.txt";
-  http.begin(version_url);
-  int code = http.GET();
-  if (code != 200) { http.end(); Serial.printf("OTA: version.txt HTTP %d\n", code); return; }
-  String latest = http.getString(); latest.trim(); http.end();
 
-  Serial.printf("OTA: current=%s latest=%s\n", CURRENT_FIRMWARE_VERSION, latest.c_str());
-  if (!force && latest == CURRENT_FIRMWARE_VERSION) { Serial.println("OTA: already up-to-date"); return; }
+  // --- version check (GitHub 302-redirects assets to a different host) ---
+  String latest;
+  {
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    bool begun;
+    WiFiClientSecure sec; WiFiClient plain;
+    if (https) { if (!verify_ssl) sec.setInsecure(); begun = http.begin(sec, version_url); }
+    else       { begun = http.begin(plain, version_url); }
+    if (!begun) { Dbg.println("OTA: version begin failed"); return; }
+    int code = http.GET();
+    if (code != 200) { http.end(); Dbg.printf("OTA: version.txt HTTP %d\n", code); return; }
+    latest = http.getString(); latest.trim(); http.end();
+  }
 
+  Dbg.printf("OTA: current=%s latest=%s\n", CURRENT_FIRMWARE_VERSION, latest.c_str());
+  if (latest.isEmpty()) { Dbg.println("OTA: empty version, abort"); return; }
+  if (!force && latest == CURRENT_FIRMWARE_VERSION) { Dbg.println("OTA: already up-to-date"); return; }
+
+  // --- download + flash firmware_<latest>.bin ---
   String firmware_url = ota_url + "firmware_" + latest + ".bin";
-  WiFiClient c;
+  Dbg.printf("OTA: downloading %s\n", firmware_url.c_str());
   httpUpdate.rebootOnUpdate(true);
-  t_httpUpdate_return ret = httpUpdate.update(c, firmware_url);
+  httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  t_httpUpdate_return ret;
+  if (https) {
+    WiFiClientSecure sec; if (!verify_ssl) sec.setInsecure();
+    ret = httpUpdate.update(sec, firmware_url);
+  } else {
+    WiFiClient plain;
+    ret = httpUpdate.update(plain, firmware_url);
+  }
   if (ret == HTTP_UPDATE_FAILED)
-    Serial.printf("OTA: failed (%d) %s\n",
-      httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+    Dbg.printf("OTA: failed (%d) %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+  else if (ret == HTTP_UPDATE_NO_UPDATES)
+    Dbg.println("OTA: server reports no update");
 }
 
 // =============================================================================
@@ -535,8 +564,10 @@ static void ota_task_fn(void *pv) {
   ota_force_flag = false;
   vTaskDelete(NULL);
 }
-void perform_ota_tasked() {
-  xTaskCreatePinnedToCore(ota_task_fn, "otaTask", 8192, NULL, 5, NULL, 0);
+// 16 KB stack — TLS (WiFiClientSecure) handshake/buffers are stack-hungry.
+void perform_ota_tasked(bool force) {
+  ota_force_flag = force;
+  xTaskCreatePinnedToCore(ota_task_fn, "otaTask", 16384, NULL, 5, NULL, 0);
 }
 
 // =============================================================================
@@ -639,17 +670,16 @@ void setup() {
   for (uint8_t i = 0; i < min((int)total_ssid_count, (int)VBSettings::MAX_SSID); i++)
     vb_remember_wifi(ssids[i], passwords[i]);
 
-  // Set OTA URL from credential.h if NVS still has the placeholder
-  if (vb.ota_url.startsWith("https://updates.example.com")) {
-    vb.ota_url = String(base_url);
+  // Pull-OTA source = this repo's GitHub latest-release assets (HTTPS, insecure
+  // TLS — no CA bundle embedded; pin a cert later for tamper-proofing).
+  if (vb.ota_url != OTA_GITHUB_URL || vb.ota_ssl) {
+    vb.ota_url = OTA_GITHUB_URL;
+    vb.ota_ssl = false;
     vb_save();
   }
 
   // Voltbench: load NVS again (now has migrated creds), try WiFi, register all /api/* routes
   vb_setup();
-
-  if (!vb_in_captive && vb.ota_auto)
-    perform_ota(false, vb.ota_ssl, vb.ota_url);
 
   server.begin();
   telnetSrv.begin();           // remote debug console on :23
@@ -657,6 +687,11 @@ void setup() {
   Dbg.println("HTTP server started");
   if (!vb_in_captive)
     Dbg.printf("URL: http://%s.local/  (telnet %s.local:23)\n", vb.mdns.c_str(), vb.mdns.c_str());
+
+  // Auto-OTA check runs AFTER the server is up, in its own task, so a slow
+  // HTTPS round-trip to GitHub never delays boot / the web UI.
+  if (!vb_in_captive && vb.ota_auto)
+    perform_ota_tasked(false);
 }
 
 void loop() {

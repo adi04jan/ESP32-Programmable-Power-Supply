@@ -744,15 +744,15 @@ void vb_register_routes() {
   });
   server.on("/api/ota/update", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
-    req->send(200, "application/json", "{\"ok\":true}");
-    extern void perform_ota_tasked();
-    perform_ota_tasked();
+    req->send(200, "application/json", "{\"ok\":true,\"msg\":\"checking GitHub\"}");
+    extern void perform_ota_tasked(bool);
+    perform_ota_tasked(false);            // only update if version.txt is newer
   });
   server.on("/api/ota/force", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
-    req->send(200, "application/json", "{\"ok\":true}");
-    extern void perform_ota_tasked();
-    perform_ota_tasked();
+    req->send(200, "application/json", "{\"ok\":true,\"msg\":\"forcing re-flash from GitHub\"}");
+    extern void perform_ota_tasked(bool);
+    perform_ota_tasked(true);             // re-download even if same version
   });
 
   // MQTT test
