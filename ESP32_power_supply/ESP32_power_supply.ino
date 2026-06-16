@@ -7,7 +7,6 @@
 // =============================================================================
 #pragma GCC optimize("Os")   // optimize for size — recovers ~50-80 KB
 #include <Wire.h>
-#include <SW_MCP4017.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -16,7 +15,6 @@
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h> // HTTPS pull-OTA (GitHub release assets)
 #include <Update.h>          // web-upload OTA (Update.write/end)
-#include <ArduinoOTA.h>      // push OTA from arduino-cli / IDE network port
 #include "driver/rtc_io.h"
 #include <ESPmDNS.h>
 
@@ -47,11 +45,9 @@
 static const uint8_t dpMaxSteps   = 128;
 static const int     maxRangeOhms = 10000;
 
-MCP4017 i2cDP(MCP4017ADDRESS, dpMaxSteps, maxRangeOhms);
-
-// Direct MCP4017 wiper control — bypasses SW_MCP4017::setSteps(), which prints
-// to Serial 4x on every call (flooding the port and adding jitter in the
-// control hot loop). Tracks the wiper step locally so dpCalcR() stays consistent.
+// Direct MCP4017 wiper control over I2C. (The SW_MCP4017 library is avoided: its
+// setSteps() prints to Serial 4x per call, flooding the port and adding jitter in
+// the control hot loop.) Tracks the wiper step locally so dpCalcR() stays consistent.
 static volatile uint16_t g_wiper_step = 0;
 static int dpStepForR(float Rout) {
   int s = (int)(((float)dpMaxSteps * (Rout - (float)MCPWIPEROHMS)) / (float)maxRangeOhms);
@@ -129,7 +125,6 @@ struct State {
 volatile uint32_t g_target_mV    = 2500;
 volatile uint32_t g_setpoint_mV  = 2500;
 volatile uint32_t g_measured_mV  = 0;
-volatile bool     g_ctrl_output1 = false;
 
 // PID state — written by voltageControlTask, read by firmware-additions.h
 volatile float    g_pid_kp          = 0.50f;
@@ -155,11 +150,6 @@ static int read_any_volt(int pin, uint32_t *sample, bool *firstrun, int sc) {
   return sum / sc;
 }
 
-int read_VV_volt() {
-  const int sc = 5;
-  static uint32_t s[sc] = {0}; static bool init = false;
-  return read_any_volt(VOLTAGE_READ_PIN_VV, s, &init, sc) * 48;
-}
 int read_5V_volt() {
   const int sc = 5;
   static uint32_t s[sc] = {0}; static bool init = false;
@@ -179,7 +169,7 @@ void setOutput(uint8_t output, bool state) {
               : (output == 2) ? ENABLE_5V_PIN
                               : ENABLE_3V3_PIN;
   digitalWrite(pin, state ? HIGH : LOW);
-  if (output == 1) { psState.output1 = state; g_ctrl_output1 = state; }
+  if (output == 1)   psState.output1 = state;
   if (output == 2)   psState.output2 = state;
   if (output == 3)   psState.output3 = state;
 }
@@ -571,27 +561,8 @@ void perform_ota_tasked(bool force) {
 }
 
 // =============================================================================
-//   Remote debug + OTA pumps (run from loop(): single-task, AsyncTCP-safe)
+//   Remote debug pump (run from loop(): single-task, AsyncTCP-safe)
 // =============================================================================
-static bool g_ota_begun = false;
-void arduino_ota_begin_if_ready() {
-  if (g_ota_begun || WiFi.status() != WL_CONNECTED) return;
-  g_ota_begun = true;                         // set first: never retry if begin misbehaves
-  ArduinoOTA.setMdnsEnabled(false);           // wifiMgrTask owns MDNS; ArduinoOTA re-entering it deadlocks
-  ArduinoOTA.setHostname(vb.mdns.c_str());
-  if (vb.password.length()) ArduinoOTA.setPassword(vb.password.c_str());
-  ArduinoOTA.onStart([]()           { Dbg.println("[OTA] arduino-ota start"); });
-  ArduinoOTA.onEnd([]()             { Dbg.println("[OTA] done -> reboot"); });
-  ArduinoOTA.onError([](ota_error_t e){ Dbg.printf("[OTA] error %d\n", (int)e); });
-  ArduinoOTA.onProgress([](unsigned p, unsigned t) {
-    static int last = -1; int pct = t ? (int)(p * 100 / t) : 0;
-    if (pct != last && pct % 20 == 0) { last = pct; Dbg.printf("[OTA] %d%%\n", pct); }
-  });
-  ArduinoOTA.begin();
-  g_ota_begun = true;
-  Dbg.printf("[OTA] ArduinoOTA ready (arduino-cli -p %s.local)\n", vb.mdns.c_str());
-}
-
 void remote_debug_pump() {
   // --- Telnet (:23): live log stream + password-gated console ---
   if (telnetSrv.hasClient()) {
@@ -696,10 +667,6 @@ void setup() {
 
 void loop() {
   vb_loop();                      // DNS captive, WebSocket push, MQTT, OCP/OTP guards
-  // NOTE: ArduinoOTA disabled — its begin()/handle() hangs the loop alongside
-  // AsyncTCP. Web-upload OTA (/api/ota/upload) is the working WiFi-flash path.
-  // arduino_ota_begin_if_ready();
-  // ArduinoOTA.handle();
   remote_debug_pump();            // telnet + browser log stream
 
   // Bench console over USB (same commands as telnet): v<volts> o1 o0 m c ?

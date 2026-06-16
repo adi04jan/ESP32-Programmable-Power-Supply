@@ -11,7 +11,7 @@
 //   7. PubSubClient MQTT bridge
 //
 // Include this header AFTER the existing sketch globals (struct State, globals,
-// read_VV_volt, setOutput, setVoltage) are defined.
+// setOutput, setVoltage) are defined.
 // =============================================================================
 #pragma once
 
@@ -37,7 +37,6 @@ extern volatile uint32_t g_measured_mV;
 extern volatile uint32_t g_setpoint_mV;
 extern void setOutput(uint8_t output, bool state);
 extern void setVoltage(float voltage);
-extern int  read_VV_volt();
 extern int  read_5V_volt();
 extern int  read_3V3_volt();
 
