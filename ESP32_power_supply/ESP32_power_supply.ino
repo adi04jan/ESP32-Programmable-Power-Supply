@@ -22,7 +22,7 @@
 #include "web_page.h"       // index_html_gz, index_html_gz_len
 #include "credential.h"     // ssids[], passwords[], base_url (initial seed only)
 
-#define CURRENT_FIRMWARE_VERSION "0.1.0"
+#define CURRENT_FIRMWARE_VERSION "2.0.0"
 
 #define DC_R2_REF          10000
 #define DC_V_REF           1235
