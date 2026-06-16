@@ -23,7 +23,7 @@
 #include "web_page.h"       // index_html_gz, index_html_gz_len
 #include "credential.h"     // ssids[], passwords[], base_url (initial seed only)
 
-#define CURRENT_FIRMWARE_VERSION "2.0.0"
+#define CURRENT_FIRMWARE_VERSION "2.0.1"
 
 // Pull-OTA source: this repo's GitHub "latest release" assets. The device fetches
 // <base>version.txt, and if it differs from CURRENT_FIRMWARE_VERSION, downloads
