@@ -157,6 +157,7 @@ int read_3V3_volt() {
 //   Output / voltage control
 // =============================================================================
 void setOutput(uint8_t output, bool state) {
+  if (output < 1 || output > 3) return;   // single bounds guard for all callers
   uint8_t pin = (output == 1) ? ENABLE_VV_PIN
               : (output == 2) ? ENABLE_5V_PIN
                               : ENABLE_3V3_PIN;
@@ -166,12 +167,23 @@ void setOutput(uint8_t output, bool state) {
   if (output == 3)   psState.output3 = state;
 }
 
-// Non-blocking: writes globals — voltageControlTask does the actual I2C work
+// Non-blocking: writes globals — voltageControlTask does the actual I2C work.
+// Clamped [0, 16 V]: rejects NaN/negative/garbage from MQTT/HTTP/console.
 void setVoltage(float voltage) {
-  uint32_t mv     = (uint32_t)(voltage * 1000.0f);
-  g_target_mV     = mv;
-  g_setpoint_mV   = mv;
+  if (!(voltage >= 0.0f)) voltage = 0.0f;
+  if (voltage > 16.0f)    voltage = 16.0f;
+  uint32_t mv      = (uint32_t)(voltage * 1000.0f);
+  g_target_mV      = mv;
+  g_setpoint_mV    = mv;
   psState.voltage1 = voltage;
+}
+
+// Single command dispatcher shared by WS / HTTP / USB+telnet console / MQTT.
+bool apply_command(const String &action, uint8_t ch, float val) {
+  if (action == "toggle" && ch >= 1 && ch <= 3) { setOutput(ch, val >= 0.5f); return true; }
+  if (action == "set_voltage" && ch == 1)       { setVoltage(val); return true; }
+  if (action == "all_off") { setOutput(1, false); setOutput(2, false); setOutput(3, false); return true; }
+  return false;
 }
 
 // Send any new ring-buffer bytes (since *cursor) to a stream; skip ahead if the
@@ -187,10 +199,11 @@ void console_exec(const String &lineIn, Print &out) {
   String l = lineIn; l.trim();
   if (!l.length()) return;
   char c = l[0];
-  if      (c == 'v') { float v = l.substring(1).toFloat(); setVoltage(v); setOutput(1, true);
-                       out.printf("[con] set=%dmV out1=on\n", (int)(v * 1000)); }
-  else if (l == "o1") { setOutput(1, true);  out.println("[con] out1=on"); }
-  else if (l == "o0") { setOutput(1, false); out.println("[con] out1=off"); }
+  if      (c == 'v') { float v = l.substring(1).toFloat();
+                       apply_command("set_voltage", 1, v); setOutput(1, true);
+                       out.printf("[con] set=%dmV out1=on\n", (int)(psState.voltage1 * 1000)); }
+  else if (l == "o1") { apply_command("toggle", 1, 1.0f); out.println("[con] out1=on"); }
+  else if (l == "o0") { apply_command("toggle", 1, 0.0f); out.println("[con] out1=off"); }
   else if (c == 'm')  { g_cal_sweep_req = true; out.println("[con] calibration sweep requested"); }
   else if (c == 'c')  { out.printf("[con] cal valid=%d\n", g_cal_valid ? 1 : 0); }
   else if (c == '?')  { out.printf("[con] set=%umV meas=%umV disp=%umV state=%u R=%dohm cal=%d\n",

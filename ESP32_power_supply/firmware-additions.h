@@ -10,7 +10,7 @@
 //   6. PubSubClient MQTT bridge
 //
 // Include this header AFTER the existing sketch globals (struct State, globals,
-// setOutput, setVoltage) are defined.
+// setOutput, setVoltage, apply_command) are defined.
 // =============================================================================
 #pragma once
 
@@ -36,6 +36,7 @@ extern volatile uint32_t g_measured_mV;
 extern volatile uint32_t g_setpoint_mV;
 extern void setOutput(uint8_t output, bool state);
 extern void setVoltage(float voltage);
+extern bool apply_command(const String &action, uint8_t ch, float val);
 extern int  read_5V_volt();
 extern int  read_3V3_volt();
 
@@ -317,12 +318,10 @@ void vb_on_ws_event(AsyncWebSocket *srv, AsyncWebSocketClient *c,
   int    output = doc["output"] | 0;
   float  value  = doc["value"]  | 0.0f;
 
-  if      (act == "toggle" && output >= 1 && output <= 3) {
-    bool on = doc["value"].is<bool>() ? doc["value"].as<bool>() : (value >= 0.5f);
-    setOutput(output, on);
-  }
-  else if (act == "set_voltage" && output == 1)               { setVoltage(value); }
-  else if (act == "all_off")    { setOutput(1,false); setOutput(2,false); setOutput(3,false); }
+  float tval = value;
+  if (act == "toggle")
+    tval = doc["value"].is<bool>() ? (doc["value"].as<bool>() ? 1.0f : 0.0f) : value;
+  apply_command(act, (uint8_t)output, tval);
 
   JsonDocument resp;
   vb_fill_status(resp);
@@ -346,10 +345,10 @@ void vb_mqtt_cmd(char *topic, byte *payload, unsigned int len) {
   String tail = t.substring(base.length());
   int slash = tail.indexOf('/');
   if (slash < 0) return;
-  uint8_t ch = tail.substring(2, slash).toInt();
+  uint8_t ch = (uint8_t)tail.substring(2, slash).toInt();
   String  fn = tail.substring(slash + 1);
-  if (fn == "output")                setOutput(ch, p == "on" || p == "1");
-  else if (fn == "voltage" && ch==1) setVoltage(p.toFloat());
+  if (fn == "output")       apply_command("toggle", ch, (p == "on" || p == "1") ? 1.0f : 0.0f);
+  else if (fn == "voltage") apply_command("set_voltage", ch, p.toFloat());
 }
 
 void vb_mqtt_setup() {
@@ -462,9 +461,7 @@ void vb_register_routes() {
     String  action = req->hasParam("action", true) ? req->getParam("action", true)->value() : "";
     uint8_t out    = req->hasParam("output", true) ? req->getParam("output", true)->value().toInt() : 0;
     float   val    = req->hasParam("value",  true) ? req->getParam("value",  true)->value().toFloat() : 0;
-    if      (action == "toggle" && out >= 1 && out <= 3) { setOutput(out, val == 1.0f); }
-    else if (action == "set_voltage" && out == 1)        { setVoltage(val); }
-    else if (action == "all_off")    { setOutput(1,false); setOutput(2,false); setOutput(3,false); }
+    apply_command(action, out, action == "toggle" ? (val == 1.0f ? 1.0f : 0.0f) : val);
     req->send(200, "application/json", "{\"ok\":true}");
   });
 
