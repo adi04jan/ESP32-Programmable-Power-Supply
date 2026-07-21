@@ -1560,6 +1560,17 @@ async function loadInfo(){
     $("#mqtt-user").value = m.user || "";
     $("#mqtt-topic").value = m.topic || "voltbench";
   }
+  // Keep the CH1 slider ceiling in sync with the calibrated vmax (updates ~10 s after a sweep)
+  if (info.vmax){
+    const s = $('.channel[data-ch="1"] [data-slider]');
+    const t = $('.channel[data-ch="1"] [data-target]');
+    if (s && +s.max !== +info.vmax){
+      channels[0].max = +info.vmax;
+      s.max = info.vmax; if (t) t.max = info.vmax;
+      const mx = $('.channel[data-ch="1"] .max');
+      if (mx) mx.textContent = (+info.vmax).toFixed(1) + "V";
+    }
+  }
 }
 
 function applyDialMode(){
