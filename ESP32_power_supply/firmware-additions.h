@@ -41,6 +41,12 @@ extern int  read_5V_volt();
 extern int  read_3V3_volt();
 extern volatile uint32_t g_5v_mV, g_3v3_mV;   // rails sampled by the control task
 
+// OTA state (defined in main sketch, near perform_ota)
+extern volatile bool     ota_busy;
+extern String            ota_latest;
+extern volatile uint32_t ota_checked_at;
+extern String ota_fetch_latest(const String &ota_url, bool verify_ssl);
+
 // Voltage-control state (defined in main sketch)
 extern volatile uint8_t  g_vctrl_state;
 
@@ -636,8 +642,22 @@ void vb_register_routes() {
   // OTA
   server.on("/api/ota/check", HTTP_GET, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
-    req->send(200, "application/json",
-      "{\"current\":\"" CURRENT_FIRMWARE_VERSION "\",\"latest\":\"unknown\",\"newer\":false}");
+    if (!ota_busy && (ota_checked_at == 0 || millis() - ota_checked_at > 60000)) {
+      ota_busy = true;
+      xTaskCreatePinnedToCore([](void *) {
+        ota_latest     = ota_fetch_latest(vb.ota_url, vb.ota_ssl);
+        ota_checked_at = millis();
+        ota_busy       = false;
+        vTaskDelete(NULL);
+      }, "otaChk", 16384, NULL, 5, NULL, 0);
+    }
+    if (ota_busy) { req->send(202, "application/json", "{\"checking\":true}"); return; }
+    JsonDocument d;
+    d["current"] = CURRENT_FIRMWARE_VERSION;
+    d["latest"]  = ota_latest.length() ? ota_latest : "unknown";
+    d["newer"]   = ota_latest.length() && ota_latest != CURRENT_FIRMWARE_VERSION;
+    String out; serializeJson(d, out);
+    req->send(200, "application/json", out);
   });
   server.on("/api/ota/update", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
@@ -689,6 +709,7 @@ void vb_register_routes() {
     [](AsyncWebServerRequest *req) {
       if (!vb_authed(req)) { req->send(401, "application/json", "{\"err\":\"auth\"}"); return; }
       bool ok = Update.isFinished() && !Update.hasError();
+      if (!ok) ota_busy = false;
       AsyncWebServerResponse *res = req->beginResponse(ok ? 200 : 500, "application/json",
         ok ? "{\"ok\":true,\"msg\":\"flashed, rebooting\"}" : "{\"ok\":false,\"err\":\"update failed\"}");
       res->addHeader("Connection", "close");
@@ -698,6 +719,10 @@ void vb_register_routes() {
     [](AsyncWebServerRequest *req, String fn, size_t index, uint8_t *data, size_t len, bool final) {
       if (!vb_authed(req)) return;                       // ignore unauthenticated uploads
       if (index == 0) {
+        // ponytail: a client that vanishes mid-upload leaves ota_busy set until
+        // reboot — acceptable ceiling; upgrade with a watchdog timeout if it bites.
+        if (ota_busy && !Update.isRunning()) { Dbg.println("[OTA] busy — upload rejected"); return; }
+        ota_busy = true;
         Dbg.printf("[OTA] web upload start: %s\n", fn.c_str());
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Dbg);
       }
@@ -705,6 +730,7 @@ void vb_register_routes() {
       if (final && Update.isRunning()) {
         if (Update.end(true)) Dbg.printf("[OTA] web upload ok: %u bytes\n", (unsigned)(index + len));
         else Update.printError(Dbg);
+        ota_busy = false;
       }
     });
 

@@ -393,24 +393,31 @@ void voltageControlTask(void* pvParameters) {
 // =============================================================================
 //   OTA — uses ESP32 core HTTPUpdate (HTTP or HTTPS, no extra library needed)
 // =============================================================================
-void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
+volatile bool     ota_busy       = false;   // one OTA operation at a time (pull or upload)
+String            ota_latest     = "";      // cached /api/ota/check result
+volatile uint32_t ota_checked_at = 0;       // millis of last successful check (0 = never)
+
+// Fetch <base>version.txt (follows GitHub's 302). "" on any failure.
+String ota_fetch_latest(const String &ota_url, bool verify_ssl) {
   bool   https       = ota_url.startsWith("https");
   String version_url = ota_url + "version.txt";
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  bool begun;
+  WiFiClientSecure sec; WiFiClient plain;
+  if (https) { if (!verify_ssl) sec.setInsecure(); begun = http.begin(sec, version_url); }
+  else       { begun = http.begin(plain, version_url); }
+  if (!begun) { Dbg.println("OTA: version begin failed"); return ""; }
+  int code = http.GET();
+  if (code != 200) { http.end(); Dbg.printf("OTA: version.txt HTTP %d\n", code); return ""; }
+  String latest = http.getString(); latest.trim(); http.end();
+  return latest;
+}
 
-  // --- version check (GitHub 302-redirects assets to a different host) ---
-  String latest;
-  {
-    HTTPClient http;
-    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-    bool begun;
-    WiFiClientSecure sec; WiFiClient plain;
-    if (https) { if (!verify_ssl) sec.setInsecure(); begun = http.begin(sec, version_url); }
-    else       { begun = http.begin(plain, version_url); }
-    if (!begun) { Dbg.println("OTA: version begin failed"); return; }
-    int code = http.GET();
-    if (code != 200) { http.end(); Dbg.printf("OTA: version.txt HTTP %d\n", code); return; }
-    latest = http.getString(); latest.trim(); http.end();
-  }
+void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
+  bool https = ota_url.startsWith("https");
+
+  String latest = ota_fetch_latest(ota_url, verify_ssl);
 
   Dbg.printf("OTA: current=%s latest=%s\n", CURRENT_FIRMWARE_VERSION, latest.c_str());
   if (latest.isEmpty()) { Dbg.println("OTA: empty version, abort"); return; }
@@ -445,10 +452,13 @@ static bool ota_force_flag = false;
 static void ota_task_fn(void *pv) {
   perform_ota(ota_force_flag, vb.ota_ssl, vb.ota_url);
   ota_force_flag = false;
+  ota_busy = false;
   vTaskDelete(NULL);
 }
 // 16 KB stack — TLS (WiFiClientSecure) handshake/buffers are stack-hungry.
 void perform_ota_tasked(bool force) {
+  if (ota_busy) { Dbg.println("OTA: busy — request ignored"); return; }
+  ota_busy = true;
   ota_force_flag = force;
   xTaskCreatePinnedToCore(ota_task_fn, "otaTask", 16384, NULL, 5, NULL, 0);
 }
