@@ -1605,7 +1605,7 @@ async function tryLogin(pass){
 
 async function bootstrap(){
   await loadInfo();
-  if (info.require_login && !sessionStorage.getItem("ps_authed")){
+  if (info?.require_login && !sessionStorage.getItem("ps_authed")){
     $("#login-view").classList.add("active");
   } else {
     startApp();
