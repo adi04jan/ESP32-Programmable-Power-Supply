@@ -562,10 +562,9 @@ void vb_register_routes() {
     if (ssid.isEmpty())    { req->send(400, "application/json", "{\"err\":\"ssid\"}"); return; }
     if (g_wifi_conn_busy)  { req->send(409, "application/json", "{\"err\":\"busy\"}"); return; }
     g_wifi_conn_busy = true;
-    req->send(200, "application/json", "{\"ok\":true}");
     struct Req { String ssid, pass; };
     auto *r = new Req{ssid, pass};
-    xTaskCreate([](void *pv) {
+    BaseType_t ok = xTaskCreate([](void *pv) {
       Req *r = (Req *)pv;
       vTaskDelay(pdMS_TO_TICKS(500));            // let the HTTP response flush
       WiFi.setAutoReconnect(false);
@@ -588,6 +587,13 @@ void vb_register_routes() {
       delete r;
       vTaskDelete(NULL);
     }, "wifiSwitch", 4096, r, 1, NULL);
+    if (ok != pdPASS) {
+      delete r;
+      g_wifi_conn_busy = false;
+      req->send(500, "application/json", "{\"err\":\"task\"}");
+      return;
+    }
+    req->send(200, "application/json", "{\"ok\":true}");
   });
 
   // Wi-Fi forget
