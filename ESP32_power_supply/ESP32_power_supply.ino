@@ -314,7 +314,9 @@ void voltageControlTask(void* pvParameters) {
 
     // Fresh filtered reading (~200 ms) + rail housekeeping + display median.
     g_measured_mV = vctrl_sample();
-    disp_push(g_measured_mV);
+    static bool disp_init = false;
+    if (!disp_init) { disp_reset(g_measured_mV); disp_init = true; }
+    else            { disp_push(g_measured_mV); }
     g_5v_mV  = (uint32_t)read_5V_volt();
     g_3v3_mV = (uint32_t)read_3V3_volt();
 
@@ -369,8 +371,12 @@ void voltageControlTask(void* pvParameters) {
           uint32_t e1 = (err < 0) ? (uint32_t)(-err) : (uint32_t)err;
           uint32_t e2 = (mv2 > target) ? mv2 - target : target - mv2;
           bool ov1 = mv > target + 300u, ov2 = mv2 > target + 300u;
-          if (!ov2 && (ov1 || e2 <= e1)) { mv = mv2; }          // keep the correction
-          else { dpSetStep(s); vTaskDelay(pdMS_TO_TICKS(300)); mv = vctrl_sample(); }
+          if ((!ov2 && (ov1 || e2 <= e1)) || (ov1 && ov2)) { mv = mv2; }  // keep correction; if both overvolt, cand is the lower-V step
+          else {                                             // correction made it worse: step back
+            dpSetStep(s); vTaskDelay(pdMS_TO_TICKS(300));
+            mv = vctrl_sample();
+            g_cal_mv[s] = (mv > 65000u) ? 65000u : (uint16_t)mv;   // map self-heal on re-sample too
+          }
         }
         g_measured_mV = mv;
         disp_reset(mv);                               // snap display to the new level
