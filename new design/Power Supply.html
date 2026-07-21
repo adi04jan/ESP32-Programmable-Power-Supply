@@ -1100,6 +1100,7 @@ function renderChannels(){
             </div>
             <button class="btn primary apply" data-apply>Set</button>
           </div>
+          <div data-land style="display:none;font-family:var(--mono);font-size:11px;color:var(--amber);padding:4px 4px 0"></div>
           <div class="dial-wrap">
             <div class="dial" data-dial>
               <div class="track"></div>
@@ -1138,8 +1139,20 @@ function renderChannels(){
       const slider = el.querySelector("[data-slider]");
       const target = el.querySelector("[data-target]");
       const apply = el.querySelector("[data-apply]");
-      slider.addEventListener("input", ()=> target.value = (+slider.value).toFixed(2));
-      target.addEventListener("input", ()=> slider.value = +target.value);
+      const land  = el.querySelector("[data-land]");
+      // Landing preview: mirror the firmware's step choice (nearest calibrated
+      // step not exceeding target+300 mV) so mid-gap targets show where the
+      // quantized hardware will actually land before you hit Set.
+      const showLanding = ()=>{
+        if (!land) return;
+        const p = predictLanding(+target.value);
+        if (p !== null && Math.abs(p - (+target.value)) > 0.06){
+          land.textContent = `→ nearest step lands at ${p.toFixed(2)} V`;
+          land.style.display = "block";
+        } else land.style.display = "none";
+      };
+      slider.addEventListener("input", ()=>{ target.value = (+slider.value).toFixed(2); showLanding(); });
+      target.addEventListener("input", ()=>{ slider.value = +target.value; showLanding(); });
       const submit = async ()=>{
         const v = Math.min(c.max, Math.max(c.min, +target.value || c.min));
         target.value = v.toFixed(2);
@@ -1167,6 +1180,7 @@ function renderChannels(){
         v = Math.max(c.min, Math.min(c.max, v));
         target.value = v.toFixed(2);
         slider.value = v;
+        showLanding();
         dialV.textContent = v.toFixed(2);
         needle.style.transform = `translateX(-50%) rotate(${clamped+180}deg)`;
         needle.style.transformOrigin = "center top";
@@ -1874,9 +1888,22 @@ if (copyWsUrl) copyWsUrl.addEventListener("click", ()=>{
 });
 
 /* Settings — calibration */
+let calMap = null;   // step->mV ladder; feeds the landing preview on the dashboard
+function predictLanding(volts){
+  if (!calMap) return null;
+  const tgt = volts * 1000;
+  let best = null, bestErr = Infinity;
+  for (const mv of calMap){
+    if (!mv || mv > tgt + 300) continue;   // firmware's overvolt ceiling
+    const e = Math.abs(mv - tgt);
+    if (e < bestErr){ bestErr = e; best = mv; }
+  }
+  return best === null ? null : best / 1000;
+}
 async function refreshCal(){
   let r; try { r = await api("/api/cal/status"); } catch(e){ return; }
   const b = $("#cal-badge");
+  calMap = (r.valid && Array.isArray(r.mv)) ? r.mv : null;
   if (r.running){ b.textContent = "SWEEPING…"; b.className = "badge warn"; setTimeout(refreshCal, 2000); }
   else if (r.valid){ b.textContent = "CALIBRATED"; b.className = "badge ok"; }
   else { b.textContent = "NOT CALIBRATED"; b.className = "badge warn"; }
