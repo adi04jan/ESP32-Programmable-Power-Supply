@@ -20,6 +20,7 @@
 
 #include "web_page.h"       // index_html_gz, index_html_gz_len
 #include "credential.h"     // ssids[], passwords[], base_url (initial seed only)
+#include "control_math.h"   // pure control math, host-tested (tools/host_test/)
 
 #define CURRENT_FIRMWARE_VERSION "2.0.1"
 
@@ -49,10 +50,7 @@ static const int     maxRangeOhms = 10000;
 // setSteps() prints to Serial 4x per call, flooding the port and adding jitter in
 // the control hot loop.) Tracks the wiper step locally so dpCalcR() stays consistent.
 static volatile uint16_t g_wiper_step = 0;
-static int dpStepForR(float Rout) {
-  int s = (int)(((float)dpMaxSteps * (Rout - (float)MCPWIPEROHMS)) / (float)maxRangeOhms);
-  return constrain(s, 0, dpMaxSteps - 1);
-}
+static int dpStepForR(float Rout) { return cm_step_for_r(Rout); }
 static void dpSetStep(int s) {
   s = constrain(s, 0, dpMaxSteps - 1);
   g_wiper_step = (uint16_t)s;
@@ -278,16 +276,7 @@ void run_cal_sweep() {
 }
 
 // Closest calibrated step to target that doesn't exceed the +300 mV ceiling.
-static int cal_best_step(uint32_t target) {
-  int best = -1; uint32_t besterr = 0xFFFFFFFFu;
-  for (int s = 0; s < dpMaxSteps; s++) {
-    if (g_cal_mv[s] == 0) continue;
-    if ((uint32_t)g_cal_mv[s] > target + 300u) continue;
-    uint32_t e = (target > g_cal_mv[s]) ? (target - g_cal_mv[s]) : (g_cal_mv[s] - target);
-    if (e < besterr) { besterr = e; best = s; }
-  }
-  return best;
-}
+static int cal_best_step(uint32_t target) { return cm_best_step(g_cal_mv, target); }
 
 // pid_autotune() is defined after #include "firmware-additions.h"
 bool pid_autotune(uint32_t target);
@@ -298,20 +287,6 @@ void voltageControlTask(void* pvParameters) {
   uint8_t  state         = 0;
   bool     pre_discharge = false;  // waiting for Vout to fall before applying the target step
   int      pending_step  = 0;      // step to apply once pre-discharge completes
-
-  // Lowest step (= max V) allowed for a target — hard ceiling of target+300 mV.
-  auto overvolt_floor_step = [](uint32_t tgt_mV) -> int {
-    uint32_t ceiling_mV = tgt_mV + 300u;
-    if (ceiling_mV <= (uint32_t)DC_V_REF) return dpMaxSteps - 1;
-    float r = (float)DC_R2_REF * (float)DC_V_REF / (float)(ceiling_mV - DC_V_REF) - (float)MCPWIPEROHMS;
-    return dpStepForR(r > 0.0f ? r : 0.0f);
-  };
-  // Formula step for a target (fallback when the calibration map isn't built).
-  auto formula_step = [](uint32_t tgt_mV) -> int {
-    uint32_t safe = (tgt_mV > (uint32_t)(DC_V_REF + 300)) ? (tgt_mV - 300u) : tgt_mV;
-    long r = (long)((DC_R2_REF * DC_V_REF) / (safe - DC_V_REF)) - MCPWIPEROHMS;
-    return dpStepForR(r > 0 ? (float)r : 0.0f);
-  };
 
   for (;;) {
     if (g_cal_sweep_req) { g_cal_sweep_req = false; run_cal_sweep(); lastTarget = 0; state = 0; continue; }
@@ -345,8 +320,8 @@ void voltageControlTask(void* pvParameters) {
       if (target > (uint32_t)DC_V_REF) {
         // Centre step: calibration map if built, else formula. Clamp to ceiling.
         int cstep      = g_cal_valid ? cal_best_step(target) : -1;
-        int start_step = (cstep >= 0) ? cstep : formula_step(target);
-        int floor_step = overvolt_floor_step(target);
+        int start_step = (cstep >= 0) ? cstep : cm_formula_step(target);
+        int floor_step = cm_floor_step(target);
         if (start_step < floor_step) start_step = floor_step;
         pending_step   = start_step;
 
@@ -385,7 +360,7 @@ void voltageControlTask(void* pvParameters) {
         // measured step that doesn't overvolt, then FREEZE. Each live read also
         // refreshes the map so it self-corrects for drift over time.
         int centre     = g_wiper_step;
-        int floor_step = overvolt_floor_step(target);
+        int floor_step = cm_floor_step(target);
         int span       = g_cal_valid ? 2 : 1;
         int lo = constrain(centre - span, floor_step, dpMaxSteps - 1);
         int hi = constrain(centre + span, 0, dpMaxSteps - 1);
