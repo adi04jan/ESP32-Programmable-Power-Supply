@@ -1,6 +1,6 @@
 # Voltbench — ESP32-C3 Programmable Power Supply
 
-A three-channel bench power supply controlled over Wi-Fi, built around an **ESP32-C3 Super Mini**. The variable channel uses a PID-controlled LM2596-ADJ buck converter with an MCP4017 I2C digital potentiometer; two fixed rails deliver regulated 5 V and 3.3 V. Everything is managed through a dark-themed responsive web UI served directly from the microcontroller — no app, no cloud, no dependencies.
+A three-channel bench power supply controlled over Wi-Fi, built around an **ESP32-C3 Super Mini**. The variable channel uses an LM2596-ADJ buck converter set by an MCP4017 I2C digital potentiometer, driven by a calibration-map "deadbeat" controller: it jumps to the mapped wiper step, verifies with one filtered ADC sample, applies at most one single-step correction, and freezes — no hunting, settled in under a second. Two fixed rails deliver regulated 5 V and 3.3 V. Everything is managed through a dark-themed responsive web UI served directly from the microcontroller — no app, no cloud, no dependencies.
 
 Designed and developed by **Aditya Biswas**.
 
@@ -19,11 +19,11 @@ Designed and developed by **Aditya Biswas**.
 ### Power Outputs
 | Channel | Rail | Range | Regulation |
 |---------|------|-------|------------|
-| CH1 | LM2596-ADJ (variable) | 2.5 V – 15 V | PID + relay auto-tune |
+| CH1 | LM2596-ADJ (variable) | 2.5 V – 15 V | map-based deadbeat control + on-device calibration sweep |
 | CH2 | Mini360 (fixed 5 V) | 5.0 V | Passthrough (monitor only) |
 | CH3 | LM1117-3.3 (LDO, fixed) | 3.3 V | Passthrough (monitor only) |
 
-### Accuracy (measured, PID auto-tuned)
+### Accuracy (measured, after calibration sweep)
 | Setpoint | Measured | Error |
 |----------|----------|-------|
 | 3.3 V | 3.22 V | −80 mV (2.4%) |
@@ -32,31 +32,29 @@ Designed and developed by **Aditya Biswas**.
 | 12.0 V | 12.29 V | +290 mV (2.4%) |
 | 15.0 V | 15.55 V | +550 mV (3.7%) |
 
-> Higher-voltage error is a hardware quantization limit (78.7 Ω/step on the MCP4017). Run PID auto-tune once after assembly for best results.
+> Accuracy is limited by wiper-step quantization (~27 mV/step at low voltages, up to ~1 V/step near the ceiling). Run Settings → Calibration → Run sweep once after assembly (CH1 unloaded).
 
 ### Web UI
-- **Dashboard** — live voltage/current at 4 Hz, per-channel enable toggles, voltage slider, preset chips (right-click to delete, ＋ to save current), delta indicator, CV/CC mode badge, All Off button
-- **History** — bezier-smoothed time-series graph with SMA noise reduction, channel filters, event markers (output on/off, trips), adjustable time window (1 min – 12 h)
-- **Settings** — mDNS hostname, security/login, Wi-Fi management (scan/connect/forget, stores up to 4 SSIDs), OTA update, experimental flags (dial mode, EMA smoothing, fast poll), safety guards, MQTT bridge, PID tuning
+- **Dashboard** — live voltage at 4 Hz, per-channel enable toggles, voltage slider, preset chips (right-click to delete, ＋ to save current), delta indicator, All Off button
+- **History** — bezier-smoothed time-series graph with SMA noise reduction, channel filters, event markers (output on/off), adjustable time window (1 min – 12 h)
+- **Settings** — mDNS hostname, security/login, Wi-Fi management (scan/connect/forget, stores up to 4 SSIDs), OTA update, experimental flags (dial mode, EMA smoothing, fast poll), MQTT bridge
+- **Calibration card** — run/clear the CH1 calibration sweep and see whether a valid map is loaded
+- **Device log pane** — live firmware log streamed over a view-only WebSocket (`/logws`)
+- **Web-upload OTA** — flash a `.bin` straight from the browser, with real upload/flash progress
 
 ### Connectivity
-- **WebSocket** `/ws` — server pushes full status JSON at 4 Hz; also accepts control commands
+- **WebSocket** `/ws` — server pushes full status JSON at up to 4 Hz; also accepts control commands
 - **REST API** — full control and configuration via `/api/*` endpoints
 - **mDNS** — reachable at `http://voltbench.local/` on any mDNS-capable host (Windows, macOS, Linux, iOS)
 - **Captive portal** — automatically falls back to AP mode (`VoltbenchAP`) when no saved Wi-Fi connects; re-tries every 30 s
-
-### Safety
-- **Over-current protection (OCP)** — trips output if current exceeds per-channel limit
-- **Over-temperature protection (OTP)** — configurable threshold (default 85 °C)
-- **Auto-recover** — optional: re-enables output after guard condition clears
-- **Trip flags** — per-channel, manually clearable from the UI
+- **Telnet console** (`:23`) and USB serial console — single-letter commands: `v<volts>` set CH1, `o1`/`o0` output on/off, `m` run calibration sweep, `c` cal status, `?` full state dump
 
 ### Management
-- **OTA update** — pull firmware from any HTTP/HTTPS URL; optional auto-check on boot
-- **NVS persistence** — all settings, PID gains, and Wi-Fi credentials survive power cycles
+- **OTA update** — pulls firmware from this repo's GitHub "latest release" assets on demand or auto-check on boot; web-upload OTA as a second, USB-free path
+- **NVS persistence** — all settings, the CH1 calibration map, and Wi-Fi credentials survive power cycles and OTA updates
 - **MQTT bridge** — publishes 1 Hz telemetry; subscribes to control topics
 - **Factory reset** — wipes all NVS from Settings → Factory Reset
-- **Token auth** — optional bearer-token login (stored in `sessionStorage`, survives page refresh)
+- **Token auth** — optional bearer-token login (stored in `sessionStorage`, persists across reboots)
 
 ---
 
@@ -126,8 +124,9 @@ VOUT ──── 47 KΩ ──── GPIO0 ──── 1 KΩ ──── GND
 - Libraries (Library Manager):
   - `ESPAsyncWebServer` + `AsyncTCP`
   - `ArduinoJson` v7
-  - `SW_MCP4017`
   - `PubSubClient` *(only if MQTT is needed)*
+
+  (The MCP4017 digital pot is driven with direct I2C register writes — no digital-pot library needed.)
 
 ### Build & Flash
 
@@ -136,12 +135,12 @@ VOUT ──── 47 KΩ ──── GPIO0 ──── 1 KΩ ──── GND
    git clone https://github.com/your-username/ESP32-Programmable-Power-Supply.git
    ```
 
-2. Edit `ESP32_power_supply/credential.h`:
+2. Edit `ESP32_power_supply/credential.h` with your Wi-Fi credentials (these only seed NVS the first time — if any SSID slot is already saved, they're ignored):
    ```cpp
-   const char* ssids[]     = { "YourSSID" };
-   const char* passwords[] = { "YourPassword" };
-   const char* base_url    = "https://your-ota-server.com/voltbench/";
+   static const char *ssids[]     = { "YourSSID" };
+   static const char *passwords[] = { "YourPassword" };
    ```
+   OTA is not configurable here — it's pinned to this repo's GitHub "latest release" assets (see [OTA Updates](#ota-updates)).
 
 3. In Arduino IDE, set:
    - Board: `ESP32C3 Dev Module`
@@ -153,7 +152,7 @@ VOUT ──── 47 KΩ ──── GPIO0 ──── 1 KΩ ──── GND
 
 5. Open Serial Monitor at **115200 baud** — you should see:
    ```
-   Voltbench v0.1.0 booting...
+   Voltbench v2.1.0 booting...
    MCP4017 OK @ 0x2F
    Joined YourSSID — IP=192.168.x.x
    URL: http://voltbench.local/
@@ -198,15 +197,15 @@ Write-Host "Done: $($bytes.Length) -> $($gzBytes.Length) bytes"
 
 ## Usage
 
-### PID Auto-Tune
+### Calibration
 
-On first flash the PID uses conservative defaults. For best accuracy, run the relay auto-tune once:
+On first flash CH1 has no calibration map, so the deadbeat controller falls back to a coarse built-in estimate. For rated accuracy, run the sweep once:
 
-1. Enable CH1 output at any mid-range voltage (5 V is ideal).
-2. In **Settings → PID**, click **Auto-tune**. The output will oscillate briefly as the relay test runs.
-3. Gains are saved to NVS and persist across reboots. The **Tuned** label confirms success.
+1. **Disconnect any load from CH1** — the sweep drives the output across its full range (~2.5 V → ceiling) and needs the rail unloaded to read clean.
+2. In **Settings → Calibration**, click **Run sweep**. It steps the MCP4017 through all 128 positions, sampling each one — takes about a minute. The busy state is reported as `"busy"` in `/api/status` and rejects a second sweep request while running.
+3. The resulting step→millivolt map is smoothed to be monotonic, marked valid, and persisted to NVS — it survives reboots and OTA updates (NVS is a separate flash partition the OTA slot swap never touches).
 
-Tune once — gains remain valid across the full 2.5–15 V range.
+Re-run the sweep only if the hardware changes (different MCP4017, feedback resistor, or LM2596 module). Use **Clear** to wipe the map and fall back to the coarse estimate.
 
 ### Presets
 
@@ -226,7 +225,7 @@ All responses are JSON. When `require_login` is enabled, include header `X-Auth:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/status` | Live voltages, currents, PID state |
+| `GET` | `/api/status` | Live voltages and controller state |
 | `GET` | `/api/info` | Device info, network, settings |
 | `POST` | `/api/login` | `pass=…` → `{ok, token}` |
 | `POST` | `/api/control` | Outputs and voltage (see below) |
@@ -234,20 +233,22 @@ All responses are JSON. When `require_login` is enabled, include header `X-Auth:
 | `GET` | `/api/wifi/scan` | Start scan → returns networks |
 | `POST` | `/api/wifi/connect` | `ssid=…&pass=…` |
 | `POST` | `/api/wifi/forget` | `ssid=…` |
-| `GET` | `/api/ota/check` | Check for newer firmware |
-| `POST` | `/api/ota/update` | Pull if newer |
-| `POST` | `/api/ota/force` | Pull unconditionally |
+| `GET` | `/api/ota/check` | Check GitHub for newer firmware (async: `202 {"checking":true}` while in flight) |
+| `POST` | `/api/ota/update` | Pull from GitHub if newer |
+| `POST` | `/api/ota/force` | Pull from GitHub unconditionally |
+| `POST` | `/api/ota/upload` | Multipart `.bin` upload → flashes the inactive OTA slot, reboots on success |
+| `POST` | `/api/cal/sweep` | Start the CH1 calibration sweep (`409` if the controller is already busy) |
+| `GET` | `/api/cal/status` | `{valid, running, mv:[128 values]}` |
+| `POST` | `/api/cal/clear` | Wipe the calibration map |
 | `GET` | `/api/mqtt/test` | Test broker connectivity |
-| `GET` | `/api/reboot` | Restart device |
+| `POST` | `/api/reboot` | Restart device |
 | `POST` | `/api/factory_reset` | Wipe NVS |
 
 **`/api/control` actions** (form-encoded POST body):
 ```
-action=toggle&output=1
+action=toggle&output=1&value=1
 action=set_voltage&output=1&value=5.0
-action=set_ilimit&output=1&value=1.5
 action=all_off
-action=clear_trip&output=1
 ```
 
 **`/api/status` example:**
@@ -255,14 +256,16 @@ action=clear_trip&output=1
 {
   "output1": true,  "output2": false, "output3": false,
   "voltage1": 4.99, "voltage2": 5.17, "voltage3": 3.31,
-  "current1": 0.08, "current2": 0,    "current3": 0,
-  "set1": 5.0,  "ts": 8040468,
-  "pid_state": "converged",
-  "pid_kp": 0.253, "pid_ki": 2.533, "pid_kd": 0.006
+  "set1": 5.0,
+  "cal": true,
+  "state": "frozen",
+  "ts": 8040468
 }
 ```
 
-`pid_state`: `idle` | `settling` | `running` | `converged` | `tuning`
+`state`: `idle` | `settling` | `verifying` | `frozen` | `busy` (`busy` = calibration sweep in progress). `voltage1` is the median-of-5 display value; `cal` reports whether a valid calibration map is loaded.
+
+`/api/info` unauthenticated returns `{fw, mdns, require_login, captive}`; with a valid token it adds `ip, mac, ssid, rssi, uptime, ota:{auto}, exp:{fast,smooth,dial}, mqtt:{…}, saved_ssids, vmax`.
 
 ---
 
@@ -270,16 +273,13 @@ action=clear_trip&output=1
 
 Connect to `ws://voltbench.local/ws`.
 
-The server **pushes** a full status frame every 250 ms automatically — no subscription needed.
+The server **pushes** a full status frame automatically — every 250 ms with the fast-poll flag on, every 1 s otherwise — no subscription needed. `ws://voltbench.local/logws` is a second, view-only socket that streams the live firmware debug log (used by the Device log pane).
 
 **Send a control command:**
 ```json
 { "action": "set_voltage", "output": 1, "value": 9.0 }
-{ "action": "toggle",      "output": 1 }
+{ "action": "toggle",      "output": 1, "value": true }
 { "action": "all_off" }
-{ "action": "set_ilimit",  "output": 1, "value": 2.0 }
-{ "action": "clear_trip",  "output": 1 }
-{ "action": "tune" }
 ```
 
 When `require_login` is on, include `"token": "<token>"` in every command.
@@ -299,53 +299,58 @@ Enable in **Settings → MQTT**. Configure broker host, port, credentials, and t
 
 | Topic | Direction | Payload |
 |-------|-----------|---------|
-| `voltbench/tele` | Publish (1 Hz) | Full JSON telemetry |
-| `voltbench/status` | Publish (retained) | `online` |
-| `voltbench/cmd/ch1/output` | Subscribe | `on` / `off` |
-| `voltbench/cmd/ch2/output` | Subscribe | `on` / `off` |
-| `voltbench/cmd/ch3/output` | Subscribe | `on` / `off` |
-| `voltbench/cmd/ch1/voltage` | Subscribe | Float string, e.g. `5.0` |
-| `voltbench/cmd/ch1/alloff` | Subscribe | Any payload |
-| `voltbench/cmd/ch1/tune` | Subscribe | Any payload — triggers auto-tune |
+| `voltbench/tele` | Publish (1 Hz) | Full JSON telemetry (same shape as `/api/status`) |
+| `voltbench/status` | Publish (retained, on connect) | `online` |
+| `voltbench/cmd/ch1/output` | Subscribe | `on` / `off` / `1` / `0` |
+| `voltbench/cmd/ch2/output` | Subscribe | `on` / `off` / `1` / `0` |
+| `voltbench/cmd/ch3/output` | Subscribe | `on` / `off` / `1` / `0` |
+| `voltbench/cmd/ch1/voltage` | Subscribe | Float string, e.g. `5.0` — clamped to `[0, 16]`, invalid channels/values are silently ignored |
 
-The prefix `voltbench` is configurable in Settings → MQTT → Topic prefix.
+The prefix `voltbench` is configurable in Settings → MQTT → Topic prefix. Only CH1 accepts a voltage command (CH2/CH3 are fixed rails); toggling CH2/CH3 output is still valid.
 
 ---
 
 ## OTA Updates
 
-1. Host `version.txt` (content: e.g. `0.1.1`) and `firmware_0.1.1.bin` on an HTTP server.
-2. Set the base URL in **Settings → OTA** (e.g. `https://your-server.com/voltbench/`).
-3. On the next boot (or via **Check for updates**), the device fetches `version.txt`, compares, and pulls the binary if newer. The device reboots automatically after a successful flash into the OTA slot.
+Two independent paths, no local server required:
+
+1. **Pull-OTA from GitHub** — the base URL is pinned in firmware to this repo's `/releases/latest/download/` assets (HTTPS, **without** certificate verification — `WiFiClientSecure::setInsecure()` is used deliberately; there's no local CA store on this MCU, and this is an accepted trade-off, not an oversight). The device fetches `version.txt`, compares it to `CURRENT_FIRMWARE_VERSION`, and — on `/api/ota/update`, `/api/ota/force`, or the optional auto-check on boot — downloads `firmware_<version>.bin` into the inactive OTA slot and reboots on success. To ship a release: tag it, then attach `version.txt` and `firmware_<version>.bin` to the GitHub release; `/releases/latest/download/` resolves automatically.
+2. **Web-upload OTA** — `POST` a compiled `.bin` to `/api/ota/upload` (multipart, e.g. `curl -H "X-Auth: <token>" -F "f=@ESP32_power_supply.ino.bin" http://voltbench.local/api/ota/upload`), or use the **Update** button in Settings for the same flow with a progress bar. No GitHub, no USB.
+
+Either path rejects a second update while one is already running (logged as `busy`).
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│  ESP32-C3  (FreeRTOS, single physical core)      │
-│                                                  │
-│  ┌──────────────────────┐  volatile globals       │
-│  │  voltageControlTask  │◄──────────────────────┐ │
-│  │  (priority 2, core 0)│  g_target_mV          │ │
-│  │                      │  g_setpoint_mV        │ │
-│  │  PID state machine   │  g_measured_mV ──────►│ │
-│  │  ADC reads  (4 Hz)   │  g_ctrl_output1       │ │
-│  │  I2C pot writes      │  g_pid_kp/ki/kd       │ │
-│  └──────────────────────┘                       │ │
-│                                                 │ │
-│  ┌──────────────────────┐                       │ │
-│  │  AsyncWebServer      │───────────────────────┘ │
-│  │  ESPAsyncWebServer   │  Reads g_measured_mV    │
-│  │                      │  Writes g_target_mV     │
-│  │  /api/* handlers     │                         │
-│  │  WebSocket push 4 Hz │                         │
-│  └──────────────────────┘                         │
-│                                                   │
-│  loop():  vb_loop()                               │
-│     DNS captive · WS push · MQTT · OCP/OTP guard  │
-└──────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│  ESP32-C3  (FreeRTOS, single physical core)        │
+│                                                    │
+│  ┌──────────────────────┐  volatile globals         │
+│  │  voltageControlTask  │◄────────────────────────┐ │
+│  │  (priority 2, core 0)│  g_target_mV            │ │
+│  │                      │  g_setpoint_mV          │ │
+│  │  deadbeat state      │  g_measured_mV          │ │
+│  │  machine: idle →     │  g_display_mV  ────────►│ │
+│  │  settling → verify   │  g_5v_mV / g_3v3_mV     │ │
+│  │  → frozen (or busy   │  g_vctrl_state          │ │
+│  │  during cal sweep)   │  g_cal_mv[128] / valid  │ │
+│  │  ADC reads (all 3    │                         │ │
+│  │  rails) + I2C pot    │                         │ │
+│  └──────────────────────┘                         │ │
+│                                                   │ │
+│  ┌──────────────────────┐                         │ │
+│  │  AsyncWebServer      │─────────────────────────┘ │
+│  │  ESPAsyncWebServer   │  Reads the globals above  │
+│  │                      │  Writes g_target_mV       │
+│  │  /api/* handlers     │                           │
+│  │  WebSocket push      │                           │
+│  └──────────────────────┘                           │
+│                                                     │
+│  loop():  vb_loop()                                 │
+│     DNS captive · WS push · MQTT · OTA · console    │
+└────────────────────────────────────────────────────┘
         │ I2C                │ ADC_11db
     MCP4017 @ 0x2F        GPIO 0 / 1 / 3
     10 KΩ, 128 steps      ×48 / ×2 / ×2
@@ -355,8 +360,8 @@ The prefix `voltbench` is configurable in Settings → MQTT → Topic prefix.
 ```
 
 **Key design decisions:**
-- `voltageControlTask` is the **sole owner** of the ADC and I2C pot — concurrent access from the web server is eliminated. Status reads use `g_measured_mV` (a `volatile uint32_t`), which is atomically written by the control task.
-- The PID operates on a ~70 ms dt (20 ms ADC sampling + 50 ms delay) giving sub-1-second convergence to within 100 mV across the full range.
+- `voltageControlTask` owns ALL ADC sampling (all three rails) and the I2C pot; web handlers read atomically-written globals only. Status reads use `g_display_mV`, a median-of-5 window snapped on freeze for a calm steady-state number.
+- The controller is a calibration-map deadbeat, not a feedback loop: predict the wiper step from `g_cal_mv[]`, wait 300 ms to settle, take one ~200 ms filtered verify sample, apply at most one ±1-step correction, then freeze (`g_vctrl_state`: idle → settling → verifying → frozen). No PID, no hunting, no per-cycle recomputation — settled in under a second across the full range. Without a calibration map it falls back to a coarse built-in R↔step estimate.
 - The web UI is a single gzip-compressed HTML file (~23 KB) served directly from PROGMEM — no filesystem partition required.
 
 ---
@@ -367,8 +372,8 @@ The prefix `voltbench` is configurable in Settings → MQTT → Topic prefix.
 |---------|-------|-----|
 | `voltbench.local` not resolving | mDNS client issue | Try IP directly; Android needs an mDNS helper app |
 | Voltage shows 0 V with output OFF | Expected — enable pin cuts power | Toggle output ON |
-| CH1 settles far from setpoint | PID gains not tuned | Run Auto-tune from Settings → PID |
-| OTA fails | Wrong URL or SSL mismatch | Verify OTA URL; disable SSL for plain HTTP |
+| CH1 settles far from setpoint | No calibration map — coarse fallback estimate in use | Run Settings → Calibration → Run sweep (CH1 unloaded) |
+| OTA "check" never returns `newer` | No release published yet, or `version.txt`/`.bin` missing from the GitHub release | Confirm the tag's release has both assets attached |
 | `MCP4017 not found!` at boot | I2C wiring | Check SDA/SCL and pull-up resistors (4.7 KΩ to 3.3 V) |
 | Sketch too large to upload | Wrong partition scheme | Select Custom and point to `partitions.csv` |
 | Settings revert after save | Browser cached old page | Hard-refresh (`Ctrl+Shift+R`) |
