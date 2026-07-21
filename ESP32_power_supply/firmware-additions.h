@@ -115,7 +115,14 @@ struct VBSettings {
 
 Preferences vbPrefs;
 
+// One mutex around every vbPrefs.begin()/end() pair — cal_save runs on the
+// control task while web handlers save settings on the AsyncTCP task.
+SemaphoreHandle_t g_nvs_mux = nullptr;
+static void nvs_lock()   { xSemaphoreTake(g_nvs_mux, portMAX_DELAY); }
+static void nvs_unlock() { xSemaphoreGive(g_nvs_mux); }
+
 void vb_load() {
+  nvs_lock();
   vbPrefs.begin("voltbench", true);
   vb.mdns          = vbPrefs.getString ("mdns",          vb.mdns);
   vb.require_login = vbPrefs.getBool   ("req_login",     vb.require_login);
@@ -137,10 +144,13 @@ void vb_load() {
     vb.ssid[i] = vbPrefs.getString(("ssid" + String(i)).c_str(), "");
     vb.pass[i] = vbPrefs.getString(("pass" + String(i)).c_str(), "");
   }
+  vb.auth_token    = vbPrefs.getString ("token",         vb.auth_token);
   vbPrefs.end();
+  nvs_unlock();
 }
 
 void vb_save() {
+  nvs_lock();
   vbPrefs.begin("voltbench", false);
   vbPrefs.putString ("mdns",      vb.mdns);
   vbPrefs.putBool   ("req_login", vb.require_login);
@@ -159,31 +169,48 @@ void vb_save() {
   vbPrefs.putString ("mq_pass",   vb.mqtt_pass);
   vbPrefs.putString ("mq_topic",  vb.mqtt_topic);
   vbPrefs.end();
+  nvs_unlock();
+}
+
+// Persist just the auth token (called after login / first-boot token mint —
+// avoids re-writing every other setting on the hot login path).
+void vb_save_token() {
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putString("token", vb.auth_token);
+  vbPrefs.end();
+  nvs_unlock();
 }
 
 // Output-1 calibration map persistence (256-byte blob in NVS)
 void cal_save() {
+  nvs_lock();
   vbPrefs.begin("voltbench", false);
   vbPrefs.putBytes("calmap", (const void*)g_cal_mv, sizeof(g_cal_mv));
   vbPrefs.putBool ("calok",  g_cal_valid);
   vbPrefs.end();
+  nvs_unlock();
 }
 void cal_load() {
+  nvs_lock();
   vbPrefs.begin("voltbench", true);
   if (vbPrefs.getBool("calok", false)) {
     size_t n = vbPrefs.getBytes("calmap", (void*)g_cal_mv, sizeof(g_cal_mv));
     g_cal_valid = (n == sizeof(g_cal_mv));
   }
   vbPrefs.end();
+  nvs_unlock();
 }
 
 void vb_save_wifi_slot(uint8_t i, const String &ssid, const String &pass) {
   if (i >= VBSettings::MAX_SSID) return;
   vb.ssid[i] = ssid; vb.pass[i] = pass;
+  nvs_lock();
   vbPrefs.begin("voltbench", false);
   vbPrefs.putString(("ssid" + String(i)).c_str(), ssid);
   vbPrefs.putString(("pass" + String(i)).c_str(), pass);
   vbPrefs.end();
+  nvs_unlock();
 }
 
 bool vb_remember_wifi(const String &ssid, const String &pass) {
@@ -201,9 +228,11 @@ void vb_forget_wifi(const String &ssid) {
 }
 
 void vb_factory_reset() {
+  nvs_lock();
   vbPrefs.begin("voltbench", false);
   vbPrefs.clear();
   vbPrefs.end();
+  nvs_unlock();
 }
 
 // =============================================================================
@@ -447,7 +476,7 @@ void vb_register_routes() {
     String pass = req->hasParam("pass", true) ? req->getParam("pass", true)->value() : "";
     if (!vb.require_login || pass == vb.password) {
       vb.auth_token = vb_make_token();
-      vb_save();
+      vb_save_token();
       JsonDocument d; d["ok"] = true; d["token"] = vb.auth_token;
       String out; serializeJson(d, out);
       req->send(200, "application/json", out);
@@ -753,8 +782,7 @@ static void wifiMgrTask(void*) {
 }
 
 void vb_setup() {
-  vb_load();
-  if (vb.auth_token.isEmpty()) { vb.auth_token = vb_make_token(); vb_save(); }
+  if (vb.auth_token.isEmpty()) { vb.auth_token = vb_make_token(); vb_save_token(); }
   WiFi.onEvent(vb_on_wifi_event);
 
   g_wifi_ready = xSemaphoreCreateBinary();

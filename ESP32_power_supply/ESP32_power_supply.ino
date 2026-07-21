@@ -503,6 +503,7 @@ void remote_debug_pump() {
 static const uint8_t total_ssid_count = sizeof(ssids) / sizeof(ssids[0]);
 
 void setup() {
+  g_nvs_mux = xSemaphoreCreateMutex();
   Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT
   Serial.setTxTimeoutMs(0);   // never block on USB-CDC writes when no host is reading
