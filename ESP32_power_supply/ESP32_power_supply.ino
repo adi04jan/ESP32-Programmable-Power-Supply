@@ -33,6 +33,13 @@
 #define DC_R2_REF          10000
 #define DC_V_REF           1235
 #define MCPWIPEROHMS       15
+// VV-rail ADC divider scale. Nominal 48.0 (47K:1K), trimmed against the bench
+// DMM 2026-07-21: 5-point fit (5→14.8 V) gave pure gain error x0.9876, zero
+// offset — resistor tolerance. Re-derive if the divider is ever reworked:
+// slope of DMM-vs-reported over >=4 points, then VV_ADC_SCALE = 48 * slope.
+// Re-run the calibration sweep after changing this (map stores scaled mV).
+#define VV_ADC_SCALE 47.40f
+
 #define VOLTAGE_READ_PIN_VV  0
 #define VOLTAGE_READ_PIN_5V  1
 #define VOLTAGE_READ_PIN_3V3 3
@@ -241,7 +248,7 @@ static uint32_t vctrl_sample() {
     sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
     vTaskDelay(pdMS_TO_TICKS(4));
   }
-  return (sum / 50) * 48;
+  return (uint32_t)((sum / 50) * VV_ADC_SCALE);
 }
 
 // Isotonic regression (Pool-Adjacent-Violators) — enforce Vout non-increasing
