@@ -524,9 +524,14 @@ void setup() {
   vb_load();
   cal_load();   // restore the output-1 calibration map if one was saved
 
-  // Always refresh credential.h entries so hardcoded credentials stay current
-  for (uint8_t i = 0; i < min((int)total_ssid_count, (int)VBSettings::MAX_SSID); i++)
-    vb_remember_wifi(ssids[i], passwords[i]);
+  // Seed credential.h entries only on first boot / after factory reset —
+  // otherwise the UI's "Forget network" would revert on every reboot.
+  bool have_saved = false;
+  for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++)
+    if (!vb.ssid[i].isEmpty()) { have_saved = true; break; }
+  if (!have_saved)
+    for (uint8_t i = 0; i < min((int)total_ssid_count, (int)VBSettings::MAX_SSID); i++)
+      vb_remember_wifi(ssids[i], passwords[i]);
 
   // Pull-OTA source = this repo's GitHub latest-release assets (HTTPS, insecure
   // TLS — no CA bundle embedded; pin a cert later for tamper-proofing).

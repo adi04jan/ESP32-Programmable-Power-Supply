@@ -55,6 +55,7 @@ extern volatile uint32_t g_display_mV;
 // =============================================================================
 static volatile int16_t  g_scan_result    = WIFI_SCAN_FAILED; // -2=idle,-1=running,>=0=count
 static volatile bool     g_scan_busy      = false;
+static volatile uint32_t g_scan_done_at   = 0;     // millis() at last scan completion (W5 cache)
 static volatile bool     g_wifi_conn_busy = false; // true during any connection attempt
 static SemaphoreHandle_t g_wifi_ready     = nullptr; // given when initial WiFi phase ends
 
@@ -70,6 +71,7 @@ static void _wfScanTask(void*) {
   WiFi.scanDelete();
   int16_t n = WiFi.scanNetworks(false, true);  // blocking, include hidden SSIDs
   g_scan_result = (n < 0) ? WIFI_SCAN_FAILED : n;
+  g_scan_done_at = millis();
   g_scan_busy   = false;
   vTaskDelete(NULL);
 }
@@ -530,47 +532,62 @@ void vb_register_routes() {
   // Never start a scan while a WiFi connection attempt is in progress; calling
   // esp_wifi_connect() during a scan kills it silently (no SCAN_DONE event).
   server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *req) {
-    if (g_wifi_conn_busy) { req->send(202, "application/json", "{\"scanning\":true}"); return; }
-    int16_t n = g_scan_result;
-    if (n == WIFI_SCAN_RUNNING) { req->send(202, "application/json", "{\"scanning\":true}"); return; }
-    if (n == WIFI_SCAN_FAILED)  { vb_trigger_scan(); req->send(202, "application/json", "{\"scanning\":true}"); return; }
+    VB_REQUIRE_AUTH(req);
+    if (g_wifi_conn_busy || g_scan_result == WIFI_SCAN_RUNNING) {
+      req->send(202, "application/json", "{\"scanning\":true}"); return;
+    }
+    if (g_scan_result == WIFI_SCAN_FAILED || millis() - g_scan_done_at > 20000) {
+      vb_trigger_scan();
+      req->send(202, "application/json", "{\"scanning\":true}"); return;
+    }
     JsonDocument d;
     auto arr = d["networks"].to<JsonArray>();
-    for (int16_t i = 0; i < n; i++) {
+    for (int16_t i = 0; i < g_scan_result; i++) {
+      if (WiFi.SSID(i).isEmpty()) continue;          // W6: skip hidden networks
       auto o = arr.add<JsonObject>();
       o["ssid"] = WiFi.SSID(i);
       o["rssi"] = WiFi.RSSI(i);
-      o["sec"]  = WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "open" : "WPA2";
+      o["sec"]  = WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "open" : "secured";
     }
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
-    g_scan_result = WIFI_SCAN_FAILED;  // mark stale so next request re-scans
+    // W5: results stay cached for 20 s — no consume-and-invalidate.
   });
 
-  // Wi-Fi connect
+  // Wi-Fi connect — one attempt at a time; creds saved only after success.
   server.on("/api/wifi/connect", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
     String ssid = req->hasParam("ssid", true) ? req->getParam("ssid", true)->value() : "";
     String pass = req->hasParam("pass", true) ? req->getParam("pass", true)->value() : "";
-    if (ssid.isEmpty()) { req->send(400, "application/json", "{\"err\":\"ssid\"}"); return; }
-    vb_remember_wifi(ssid, pass);
+    if (ssid.isEmpty())    { req->send(400, "application/json", "{\"err\":\"ssid\"}"); return; }
+    if (g_wifi_conn_busy)  { req->send(409, "application/json", "{\"err\":\"busy\"}"); return; }
+    g_wifi_conn_busy = true;
     req->send(200, "application/json", "{\"ok\":true}");
-    static String s_ssid = ssid, s_pass = pass;
-    s_ssid = ssid; s_pass = pass;
-    xTaskCreate([](void*) {
-      g_wifi_conn_busy = true;
-      vTaskDelay(pdMS_TO_TICKS(500));
+    struct Req { String ssid, pass; };
+    auto *r = new Req{ssid, pass};
+    xTaskCreate([](void *pv) {
+      Req *r = (Req *)pv;
+      vTaskDelay(pdMS_TO_TICKS(500));            // let the HTTP response flush
       WiFi.setAutoReconnect(false);
       WiFi.disconnect(false, false);
       vTaskDelay(pdMS_TO_TICKS(300));
-      WiFi.begin(s_ssid.c_str(), s_pass.c_str());
+      WiFi.begin(r->ssid.c_str(), r->pass.c_str());
       uint32_t t0 = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000)
         vTaskDelay(pdMS_TO_TICKS(100));
-      if (WiFi.status() == WL_CONNECTED) WiFi.setAutoReconnect(true);
-      g_wifi_conn_busy = false;
+      if (WiFi.status() == WL_CONNECTED) {
+        vb_remember_wifi(r->ssid, r->pass);      // W4: save only creds that worked
+        WiFi.setAutoReconnect(true);
+        g_wifi_conn_busy = false;
+      } else {
+        Dbg.printf("[WiFi] join '%s' failed — recovering\n", r->ssid.c_str());
+        g_wifi_conn_busy = false;                // release before _tryAllSSIDs re-claims
+        if (_tryAllSSIDs(5000)) WiFi.setAutoReconnect(true);
+        else if (!vb_in_captive) vb_start_captive_ap();   // W1: never orphaned
+      }
+      delete r;
       vTaskDelete(NULL);
-    }, "wifiSwitch", 4096, NULL, 1, NULL);
+    }, "wifiSwitch", 4096, r, 1, NULL);
   });
 
   // Wi-Fi forget
@@ -716,6 +733,7 @@ static void wifiMgrTask(void*) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(60000));   // retry interval
     if (!vb_in_captive) continue;
+    if (g_wifi_conn_busy) continue;     // a user-initiated connect owns the radio
 
     // Politely wait for any in-progress scan to finish before connecting
     while (g_scan_busy) vTaskDelay(pdMS_TO_TICKS(300));
