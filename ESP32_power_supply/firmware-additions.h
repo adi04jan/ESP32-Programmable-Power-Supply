@@ -7,8 +7,7 @@
 //   3. AsyncWebSocket push of /status (drops idle polling)
 //   4. Optional bearer-token auth (X-Auth header)
 //   5. Captive-portal AP fallback when no SSID can connect
-//   6. Over-current / over-temperature guard with auto-recover
-//   7. PubSubClient MQTT bridge
+//   6. PubSubClient MQTT bridge
 //
 // Include this header AFTER the existing sketch globals (struct State, globals,
 // setOutput, setVoltage) are defined.
@@ -98,14 +97,6 @@ struct VBSettings {
   bool     exp_smooth    = false;
   bool     exp_dial      = false;
 
-  bool     guard_ocp     = true;
-  bool     guard_otp     = true;
-  uint8_t  guard_otp_t   = 85;
-  bool     guard_recover = false;
-
-  float    ilim[3]       = {1.0f, 1.5f, 1.0f};
-  bool     trip[3]       = {false, false, false};
-
   bool     mqtt_en       = false;
   String   mqtt_host     = "";
   uint16_t mqtt_port     = 1883;
@@ -132,11 +123,6 @@ void vb_load() {
   vb.exp_fast      = vbPrefs.getBool   ("e_fast",        vb.exp_fast);
   vb.exp_smooth    = vbPrefs.getBool   ("e_smooth",      vb.exp_smooth);
   vb.exp_dial      = vbPrefs.getBool   ("e_dial",        vb.exp_dial);
-  vb.guard_ocp     = vbPrefs.getBool   ("g_ocp",         vb.guard_ocp);
-  vb.guard_otp     = vbPrefs.getBool   ("g_otp",         vb.guard_otp);
-  vb.guard_otp_t   = vbPrefs.getUChar  ("g_otp_t",       vb.guard_otp_t);
-  vb.guard_recover = vbPrefs.getBool   ("g_rec",         vb.guard_recover);
-  for (int i = 0; i < 3; i++) vb.ilim[i] = vbPrefs.getFloat(("ilim" + String(i)).c_str(), vb.ilim[i]);
   vb.mqtt_en       = vbPrefs.getBool   ("mq_en",         vb.mqtt_en);
   vb.mqtt_host     = vbPrefs.getString ("mq_host",       vb.mqtt_host);
   vb.mqtt_port     = vbPrefs.getUShort ("mq_port",       vb.mqtt_port);
@@ -162,11 +148,6 @@ void vb_save() {
   vbPrefs.putBool   ("e_fast",    vb.exp_fast);
   vbPrefs.putBool   ("e_smooth",  vb.exp_smooth);
   vbPrefs.putBool   ("e_dial",    vb.exp_dial);
-  vbPrefs.putBool   ("g_ocp",     vb.guard_ocp);
-  vbPrefs.putBool   ("g_otp",     vb.guard_otp);
-  vbPrefs.putUChar  ("g_otp_t",   vb.guard_otp_t);
-  vbPrefs.putBool   ("g_rec",     vb.guard_recover);
-  for (int i = 0; i < 3; i++) vbPrefs.putFloat(("ilim" + String(i)).c_str(), vb.ilim[i]);
   vbPrefs.putBool   ("mq_en",     vb.mqtt_en);
   vbPrefs.putString ("mq_host",   vb.mqtt_host);
   vbPrefs.putUShort ("mq_port",   vb.mqtt_port);
@@ -284,41 +265,6 @@ bool vb_authed(AsyncWebServerRequest *req) {
 #define VB_REQUIRE_AUTH(req) do { if (!vb_authed(req)) { req->send(401, "application/json", "{\"err\":\"auth\"}"); return; } } while (0)
 
 // =============================================================================
-//   Guards (over-current / over-temperature)
-// =============================================================================
-float vb_read_temp_c() { return 35.0f; /* replace with NTC math */ }
-
-float vb_read_current(uint8_t ch) {
-  if (ch == 1) return psState.output1 ? 0.08f : 0.0f;
-  if (ch == 2) return psState.output2 ? 0.14f : 0.0f;
-  if (ch == 3) return psState.output3 ? 0.05f : 0.0f;
-  return 0;
-}
-
-void vb_trip(uint8_t ch, const char *why) {
-  Serial.printf("[guard] CH%u TRIP: %s\n", ch, why);
-  vb.trip[ch - 1] = true;
-  setOutput(ch, false);
-}
-
-uint32_t vb_last_guard = 0;
-void vb_guard_tick() {
-  if (millis() - vb_last_guard < 100) return;
-  vb_last_guard = millis();
-  if (vb.guard_otp) {
-    float t = vb_read_temp_c();
-    if (t > vb.guard_otp_t)
-      for (uint8_t ch = 1; ch <= 3; ch++) vb_trip(ch, "OTP");
-  }
-  if (vb.guard_ocp) {
-    for (uint8_t ch = 1; ch <= 3; ch++) {
-      if (vb.trip[ch - 1]) continue;
-      if (vb_read_current(ch) > vb.ilim[ch - 1]) vb_trip(ch, "OCP");
-    }
-  }
-}
-
-// =============================================================================
 //   WebSocket + telemetry broadcast
 // =============================================================================
 AsyncWebSocket vb_ws("/ws");
@@ -334,15 +280,6 @@ void vb_fill_status(JsonDocument &d) {
   d["cal"]      = g_cal_valid;
   d["voltage2"] = read_5V_volt()  / 1000.0f;
   d["voltage3"] = read_3V3_volt() / 1000.0f;
-  d["current1"] = vb_read_current(1);
-  d["current2"] = vb_read_current(2);
-  d["current3"] = vb_read_current(3);
-  d["cc1"]      = vb_read_current(1) > vb.ilim[0] * 0.95f;
-  d["cc2"]      = vb_read_current(2) > vb.ilim[1] * 0.95f;
-  d["cc3"]      = vb_read_current(3) > vb.ilim[2] * 0.95f;
-  d["trip1"]    = vb.trip[0];
-  d["trip2"]    = vb.trip[1];
-  d["trip3"]    = vb.trip[2];
   d["set1"]     = g_setpoint_mV / 1000.0f;
   d["ts"]       = (uint64_t)millis();
   static const char* const STATE_STR[] = {"idle","settling","verifying","frozen","busy"};
@@ -383,12 +320,9 @@ void vb_on_ws_event(AsyncWebSocket *srv, AsyncWebSocketClient *c,
   if      (act == "toggle" && output >= 1 && output <= 3) {
     bool on = doc["value"].is<bool>() ? doc["value"].as<bool>() : (value >= 0.5f);
     setOutput(output, on);
-    vb.trip[output - 1] = false;
   }
   else if (act == "set_voltage" && output == 1)               { setVoltage(value); }
-  else if (act == "set_ilimit"  && output >= 1 && output <= 3){ vb.ilim[output-1] = value; vb_save(); }
   else if (act == "all_off")    { setOutput(1,false); setOutput(2,false); setOutput(3,false); }
-  else if (act == "clear_trip") { for (int i=0;i<3;i++) vb.trip[i] = false; }
 
   JsonDocument resp;
   vb_fill_status(resp);
@@ -497,9 +431,6 @@ void vb_register_routes() {
     auto exp = d["exp"].to<JsonObject>();
       exp["current"] = vb.exp_current; exp["fast"] = vb.exp_fast;
       exp["smooth"]  = vb.exp_smooth;  exp["dial"]  = vb.exp_dial;
-    auto g = d["guard"].to<JsonObject>();
-      g["ocp"] = vb.guard_ocp; g["otp"] = vb.guard_otp;
-      g["otp_temp"] = vb.guard_otp_t; g["recover"] = vb.guard_recover;
     auto m = d["mqtt"].to<JsonObject>();
       m["enabled"] = vb.mqtt_en; m["host"] = vb.mqtt_host;
       m["port"]    = vb.mqtt_port; m["user"] = vb.mqtt_user;
@@ -531,11 +462,9 @@ void vb_register_routes() {
     String  action = req->hasParam("action", true) ? req->getParam("action", true)->value() : "";
     uint8_t out    = req->hasParam("output", true) ? req->getParam("output", true)->value().toInt() : 0;
     float   val    = req->hasParam("value",  true) ? req->getParam("value",  true)->value().toFloat() : 0;
-    if      (action == "toggle" && out >= 1 && out <= 3) { setOutput(out, val == 1.0f); vb.trip[out-1] = false; }
+    if      (action == "toggle" && out >= 1 && out <= 3) { setOutput(out, val == 1.0f); }
     else if (action == "set_voltage" && out == 1)        { setVoltage(val); }
-    else if (action == "set_ilimit"  && out >= 1 && out <= 3) { vb.ilim[out-1] = val; vb_save(); }
     else if (action == "all_off")    { setOutput(1,false); setOutput(2,false); setOutput(3,false); }
-    else if (action == "clear_trip") { for (int i=0;i<3;i++) vb.trip[i] = false; }
     req->send(200, "application/json", "{\"ok\":true}");
   });
 
@@ -560,13 +489,6 @@ void vb_register_routes() {
           if (e["fast"]   .is<bool>()) vb.exp_fast    = e["fast"];
           if (e["smooth"] .is<bool>()) vb.exp_smooth  = e["smooth"];
           if (e["dial"]   .is<bool>()) vb.exp_dial    = e["dial"];
-        }
-        if (s["guard"].is<JsonObject>()) {
-          JsonObject g = s["guard"];
-          if (g["ocp"].is<bool>())     vb.guard_ocp     = g["ocp"];
-          if (g["otp"].is<bool>())     vb.guard_otp     = g["otp"];
-          if (g["otp_temp"].is<int>()) vb.guard_otp_t   = g["otp_temp"];
-          if (g["recover"].is<bool>()) vb.guard_recover = g["recover"];
         }
         if (s["mqtt"].is<JsonObject>()) {
           JsonObject m = s["mqtt"];
@@ -829,7 +751,6 @@ void vb_setup() {
 void vb_loop() {
   if (vb_in_captive) vb_dns.processNextRequest();
   // WiFi connection management is handled entirely by wifiMgrTask — nothing here.
-  vb_guard_tick();
   vb_push_status();
   vb_mqtt_loop();
   vb_ws.cleanupClients();
