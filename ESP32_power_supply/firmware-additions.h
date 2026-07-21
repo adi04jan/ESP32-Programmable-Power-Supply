@@ -102,7 +102,6 @@ struct VBSettings {
   bool     ota_ssl       = true;
   bool     ota_auto      = true;
 
-  bool     exp_current   = false;
   bool     exp_fast      = true;
   bool     exp_smooth    = false;
   bool     exp_dial      = false;
@@ -136,7 +135,6 @@ void vb_load() {
   vb.ota_url       = vbPrefs.getString ("ota_url",       vb.ota_url);
   vb.ota_ssl       = vbPrefs.getBool   ("ota_ssl",       vb.ota_ssl);
   vb.ota_auto      = vbPrefs.getBool   ("ota_auto",      vb.ota_auto);
-  vb.exp_current   = vbPrefs.getBool   ("e_current",     vb.exp_current);
   vb.exp_fast      = vbPrefs.getBool   ("e_fast",        vb.exp_fast);
   vb.exp_smooth    = vbPrefs.getBool   ("e_smooth",      vb.exp_smooth);
   vb.exp_dial      = vbPrefs.getBool   ("e_dial",        vb.exp_dial);
@@ -164,7 +162,6 @@ void vb_save() {
   vbPrefs.putString ("ota_url",   vb.ota_url);
   vbPrefs.putBool   ("ota_ssl",   vb.ota_ssl);
   vbPrefs.putBool   ("ota_auto",  vb.ota_auto);
-  vbPrefs.putBool   ("e_current", vb.exp_current);
   vbPrefs.putBool   ("e_fast",    vb.exp_fast);
   vbPrefs.putBool   ("e_smooth",  vb.exp_smooth);
   vbPrefs.putBool   ("e_dial",    vb.exp_dial);
@@ -430,7 +427,7 @@ void vb_register_routes() {
     AsyncWebServerResponse *res =
       req->beginResponse_P(200, "text/html", index_html_gz, index_html_gz_len);
     res->addHeader("Content-Encoding", "gzip");
-    res->addHeader("Cache-Control", "public, max-age=300");
+    res->addHeader("Cache-Control", "no-cache");
     req->send(res);
   });
 
@@ -456,25 +453,34 @@ void vb_register_routes() {
     JsonDocument d;
     d["fw"]            = CURRENT_FIRMWARE_VERSION;
     d["mdns"]          = vb.mdns;
-    d["ip"]            = WiFi.localIP().toString();
-    d["mac"]           = WiFi.macAddress();
-    d["ssid"]          = WiFi.SSID();
-    d["rssi"]          = WiFi.RSSI();
-    d["uptime"]        = millis() / 1000;
     d["require_login"] = vb.require_login;
     d["captive"]       = vb_in_captive;
-    auto ota = d["ota"].to<JsonObject>();
-      ota["url"] = vb.ota_url; ota["ssl"] = vb.ota_ssl; ota["auto"] = vb.ota_auto;
-    auto exp = d["exp"].to<JsonObject>();
-      exp["current"] = vb.exp_current; exp["fast"] = vb.exp_fast;
-      exp["smooth"]  = vb.exp_smooth;  exp["dial"]  = vb.exp_dial;
-    auto m = d["mqtt"].to<JsonObject>();
-      m["enabled"] = vb.mqtt_en; m["host"] = vb.mqtt_host;
-      m["port"]    = vb.mqtt_port; m["user"] = vb.mqtt_user;
-      m["topic"]   = vb.mqtt_topic;
-    auto saved = d["saved_ssids"].to<JsonArray>();
-    for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++)
-      if (!vb.ssid[i].isEmpty()) saved.add(vb.ssid[i]);
+    if (vb_authed(req)) {
+      d["ip"]            = WiFi.localIP().toString();
+      d["mac"]           = WiFi.macAddress();
+      d["ssid"]          = WiFi.SSID();
+      d["rssi"]          = WiFi.RSSI();
+      d["uptime"]        = millis() / 1000;
+      auto ota = d["ota"].to<JsonObject>();
+        ota["auto"] = vb.ota_auto;
+      auto exp = d["exp"].to<JsonObject>();
+        exp["fast"]   = vb.exp_fast;
+        exp["smooth"] = vb.exp_smooth;  exp["dial"]  = vb.exp_dial;
+      auto m = d["mqtt"].to<JsonObject>();
+        m["enabled"] = vb.mqtt_en; m["host"] = vb.mqtt_host;
+        m["port"]    = vb.mqtt_port; m["user"] = vb.mqtt_user;
+        m["topic"]   = vb.mqtt_topic;
+      auto saved = d["saved_ssids"].to<JsonArray>();
+      for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++)
+        if (!vb.ssid[i].isEmpty()) saved.add(vb.ssid[i]);
+      uint32_t vmax_mV = 16000;
+      if (g_cal_valid) {
+        uint32_t top = 0;
+        for (int s = 0; s < 128; s++) if (g_cal_mv[s] > top) top = g_cal_mv[s];
+        if (top > 2500 && top < 16000) vmax_mV = top;
+      }
+      d["vmax"] = vmax_mV / 1000.0f;
+    }
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
   });
@@ -514,13 +520,10 @@ void vb_register_routes() {
         if (s["password"].is<const char*>()) vb.password      = s["password"].as<String>();
         if (s["ota"].is<JsonObject>()) {
           JsonObject o = s["ota"];
-          if (o["url"].is<const char*>()) vb.ota_url  = o["url"].as<String>();
-          if (o["ssl"].is<bool>())        vb.ota_ssl  = o["ssl"];
           if (o["auto"].is<bool>())       vb.ota_auto = o["auto"];
         }
         if (s["exp"].is<JsonObject>()) {
           JsonObject e = s["exp"];
-          if (e["current"].is<bool>()) vb.exp_current = e["current"];
           if (e["fast"]   .is<bool>()) vb.exp_fast    = e["fast"];
           if (e["smooth"] .is<bool>()) vb.exp_smooth  = e["smooth"];
           if (e["dial"]   .is<bool>()) vb.exp_dial    = e["dial"];
@@ -549,6 +552,7 @@ void vb_register_routes() {
     req->send(200, "application/json", "{\"ok\":true,\"msg\":\"calibration sweep started\"}");
   });
   server.on("/api/cal/status", HTTP_GET, [](AsyncWebServerRequest *req) {
+    VB_REQUIRE_AUTH(req);
     JsonDocument d;
     d["valid"]   = g_cal_valid;
     d["running"] = (g_vctrl_state == 4);
@@ -688,7 +692,7 @@ void vb_register_routes() {
   });
 
   // Reboot
-  server.on("/api/reboot", HTTP_GET, [](AsyncWebServerRequest *req) {
+  server.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
     req->send(200, "application/json", "{\"ok\":true}");
     delay(200);
