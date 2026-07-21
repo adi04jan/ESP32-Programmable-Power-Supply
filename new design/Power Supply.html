@@ -654,6 +654,14 @@ canvas#graph{display:block;width:100%;height:380px}
 
           <p class="hint" style="font-size:11.5px;color:var(--amber)">Firmware is pulled from this project's GitHub releases over HTTPS <em>without certificate verification</em> — authenticity is not TLS-verified.</p>
 
+          <div class="field" style="margin-top:12px">
+            <label>Upload firmware (.bin) directly — no server needed</label>
+            <div style="display:flex;gap:8px">
+              <input class="input" type="file" id="ota-file" accept=".bin" style="padding:7px 12px">
+              <button class="btn" id="ota-upload">Upload &amp; flash</button>
+            </div>
+          </div>
+
           <div class="progress" id="ota-progress"><div class="bar" id="ota-bar"></div></div>
 
           <div class="row action">
@@ -691,6 +699,17 @@ canvas#graph{display:block;width:100%;height:380px}
           <div class="row action">
             <button class="btn danger" id="reboot-btn">Reboot device</button>
             <button class="btn" id="factory-btn">Factory reset</button>
+          </div>
+        </div>
+
+        <!-- CALIBRATION -->
+        <div class="card">
+          <h3>Calibration</h3>
+          <p class="desc">Sweeps CH1 across all 128 wiper steps to build the step→voltage map used for fast, accurate set-points. <strong>Disconnect any load from CH1 first</strong> — the output ramps to its maximum during the sweep (~1 min).</p>
+          <div class="row"><div class="k"><span class="lbl">Map status</span></div><span class="badge" id="cal-badge">—</span></div>
+          <div class="row action">
+            <button class="btn" id="cal-clear">Clear map</button>
+            <button class="btn primary" id="cal-run">Run sweep</button>
           </div>
         </div>
         <!-- WEBSOCKET API HELP -->
@@ -753,6 +772,13 @@ canvas#graph{display:block;width:100%;height:380px}
             <button class="btn ghost" id="mqtt-test">Test</button>
             <button class="btn primary" id="save-mqtt">Save</button>
           </div>
+        </div>
+
+        <!-- DEVICE LOG -->
+        <div class="card" style="grid-column:span 2">
+          <h3>Device log</h3>
+          <p class="desc">Live firmware log — control activity, Wi-Fi events, OTA progress. Same stream as telnet port 23.</p>
+          <pre id="devlog" style="background:#0a0d13;border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:220px;overflow:auto;font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre-wrap;margin:0">connecting…</pre>
         </div>
 
       </div>
@@ -901,6 +927,9 @@ const demo = (() => {
     if (p === "/api/ota/update" || p === "/api/ota/force") {
       return {ok:true, started:true};
     }
+    if (p === "/api/cal/status") return {running:false, valid:state.cal};
+    if (p === "/api/cal/sweep")  { state.cal = true;  return {ok:true}; }
+    if (p === "/api/cal/clear")  { state.cal = false; return {ok:true}; }
     if (p === "/api/reboot") return {ok:true};
     if (p === "/api/factory_reset" && opts.method==="POST") {
       localStorage.removeItem("ps_hist");
@@ -1558,8 +1587,10 @@ async function startApp(){
   applyDialMode();
   startPolling();
   connectWS();
+  connectLogWS();
   pull();
   renderEvents();
+  refreshCal();
 }
 
 async function tryLogin(pass){
@@ -1698,27 +1729,56 @@ async function saveOta(){
 $("#ota-auto").addEventListener("change", saveOta);
 
 $("#ota-check").addEventListener("click", async ()=>{
-  await saveOta();
-  const r = await api("/api/ota/check");
-  if (r.newer) toast("Update available", `Current v${r.current} → latest v${r.latest}`,"warn");
-  else toast("Up to date", `Running latest v${r.current}`);
+  const btn = $("#ota-check"); btn.disabled = true;
+  let r; try { r = await api("/api/ota/check"); } catch(e){ r = null; }
+  for (let i = 0; r && r.checking && i < 15; i++){
+    await new Promise(res=>setTimeout(res, 2000));
+    try { r = await api("/api/ota/check"); } catch(e){ r = null; }
+  }
+  btn.disabled = false;
+  if (!r || r.checking || r.latest === "unknown") return toast("Check failed","Could not reach GitHub","err");
+  if (r.newer) toast("Update available", `v${r.current} → v${r.latest}`,"warn");
+  else toast("Up to date", `v${r.current} is the latest release`);
 });
 
 async function runOta(force){
-  if (force && !confirm("Force-push the latest firmware regardless of version? The device will reboot.")) return;
-  await saveOta();
-  const bar = $("#ota-bar"), wrap = $("#ota-progress");
-  wrap.classList.add("show"); bar.style.width = "0%";
-  await api(force ? "/api/ota/force" : "/api/ota/update");
-  let p = 0;
-  const tick = setInterval(()=>{
-    p = Math.min(100, p + 6 + Math.random()*10);
-    bar.style.width = p + "%";
-    if (p>=100){ clearInterval(tick); toast("OTA complete","Device will reboot shortly."); setTimeout(()=>wrap.classList.remove("show"),2000); }
-  }, 380);
+  if (!confirm(force
+    ? "Force-flash the latest GitHub release? All outputs turn off when the device reboots."
+    : "Update if a newer release exists? All outputs turn off when the device reboots.")) return;
+  let r; try { r = await api(force ? "/api/ota/force" : "/api/ota/update", {method:"POST"}); } catch(e){ r = null; }
+  if (!r || !r.ok) return toast("OTA error","Could not start the update","err");
+  toast("OTA started","Downloading from GitHub — the device reboots if it flashes. Watch the device log.","warn");
+  const was = info?.fw;
+  const poll = setInterval(async ()=>{
+    try { const i = await api("/api/info"); if (i.fw && i.fw !== was){ clearInterval(poll); toast("Updated", `Now running v${i.fw}`); loadInfo(); } } catch(_){}
+  }, 3000);
+  setTimeout(()=>clearInterval(poll), 180000);
 }
 $("#ota-update").addEventListener("click", ()=> runOta(false));
 $("#ota-force").addEventListener("click", ()=> runOta(true));
+
+/* Settings — OTA web upload */
+$("#ota-upload").addEventListener("click", ()=>{
+  const f = $("#ota-file").files[0];
+  if (!f) return toast("No file","Choose a compiled .bin first","err");
+  if (!confirm(`Flash ${f.name} (${(f.size/1024).toFixed(0)} KB)? All outputs turn off when the device reboots.`)) return;
+  const bar = $("#ota-bar"), wrap = $("#ota-progress");
+  wrap.classList.add("show"); bar.style.width = "0%";
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/ota/upload");
+  const tok = sessionStorage.getItem("ps_token");
+  if (tok) xhr.setRequestHeader("X-Auth", tok);
+  xhr.upload.onprogress = e => { if (e.lengthComputable) bar.style.width = (e.loaded/e.total*100).toFixed(0)+"%"; };
+  xhr.onload = ()=>{
+    let ok = false; try { ok = JSON.parse(xhr.responseText).ok; } catch(_){}
+    if (ok){ bar.style.width = "100%"; toast("Flashed","Device is rebooting with the new firmware."); }
+    else toast("Upload failed", xhr.responseText || "Update error", "err");
+    setTimeout(()=>wrap.classList.remove("show"), 2000);
+  };
+  xhr.onerror = ()=>{ toast("Upload failed","Connection error","err"); wrap.classList.remove("show"); };
+  const fd = new FormData(); fd.append("f", f, f.name);
+  xhr.send(fd);
+});
 
 /* Settings — experimental */
 async function saveExp(){
@@ -1790,6 +1850,40 @@ if (copyWsUrl) copyWsUrl.addEventListener("click", ()=>{
   const url = $("#ws-url")?.textContent || "";
   copyText(url).then(()=> toast("Copied","WebSocket URL copied to clipboard"));
 });
+
+/* Settings — calibration */
+async function refreshCal(){
+  let r; try { r = await api("/api/cal/status"); } catch(e){ return; }
+  const b = $("#cal-badge");
+  if (r.running){ b.textContent = "SWEEPING…"; b.className = "badge warn"; setTimeout(refreshCal, 2000); }
+  else if (r.valid){ b.textContent = "CALIBRATED"; b.className = "badge ok"; }
+  else { b.textContent = "NOT CALIBRATED"; b.className = "badge warn"; }
+}
+$("#cal-run").addEventListener("click", async ()=>{
+  if (!confirm("Remove any load from CH1 — the output sweeps up to its maximum voltage. Start calibration (~1 min)?")) return;
+  const r = await api("/api/cal/sweep", {method:"POST"});
+  if (r.ok){ toast("Calibration started","CH1 is sweeping — watch the map status."); refreshCal(); }
+  else toast("Busy", r.err || "Controller is busy", "err");
+});
+$("#cal-clear").addEventListener("click", async ()=>{
+  if (!confirm("Clear the calibration map? Set-points fall back to the formula until you re-run the sweep.")) return;
+  await api("/api/cal/clear", {method:"POST"});
+  refreshCal(); toast("Cleared","Calibration map erased.");
+});
+
+/* Device log stream */
+let logWs = null;
+function connectLogWS(){
+  if (DEMO || logWs) return;
+  try { logWs = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/logws"); } catch(e){ return; }
+  const pane = $("#devlog");
+  logWs.onopen = ()=>{ pane.textContent = ""; };
+  logWs.onmessage = ev => {
+    pane.textContent = (pane.textContent + ev.data).split("\n").slice(-200).join("\n");
+    pane.scrollTop = pane.scrollHeight;
+  };
+  logWs.onclose = ()=>{ logWs = null; setTimeout(connectLogWS, 5000); };
+}
 
 /* periodic info refresh */
 setInterval(loadInfo, 10000);
