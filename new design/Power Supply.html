@@ -222,18 +222,6 @@ a:hover{text-decoration:underline}
 .readout .delta{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim)}
 .readout .delta.warn{color:var(--amber)}
 
-.current-row{
-  display:none;
-  padding:6px 4px 12px;
-  border-top:1px dashed var(--line);
-  margin-top:6px;
-}
-.current-row.show{display:flex;align-items:baseline;gap:8px}
-.current-row .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
-.current-row .val{font-family:var(--mono);font-size:18px;color:var(--cyan);font-variant-numeric:tabular-nums}
-.current-row .u{font-family:var(--mono);font-size:11px;color:var(--muted)}
-.current-row .exp{margin-left:auto;font-size:10px;color:var(--amber);font-family:var(--mono);letter-spacing:.05em}
-
 .ch-controls{margin-top:14px;display:flex;flex-direction:column;gap:12px}
 
 /* Slider */
@@ -391,7 +379,7 @@ canvas#graph{display:block;width:100%;height:380px}
 .progress.show{display:block}
 .progress .bar{height:100%;background:linear-gradient(90deg,#2aa46a,#3dd68c);width:0;transition:width .25s}
 
-/* ---------- Channel extras: presets, current-limit, dial -------------- */
+/* ---------- Channel extras: presets, dial ----------------------------- */
 .presets{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
 .chip{
   font-family:var(--mono);font-size:11.5px;letter-spacing:.02em;
@@ -402,20 +390,6 @@ canvas#graph{display:block;width:100%;height:380px}
 .chip:hover{background:#161c27;color:var(--text);border-color:var(--line-2)}
 .chip.active{background:#13241a;color:#a4f0c8;border-color:#1f5a3c}
 .chip.add{color:var(--muted);border-style:dashed}
-
-.ilimit-row{
-  display:none;align-items:center;gap:8px;
-  padding:8px 4px 4px;border-top:1px dashed var(--line);margin-top:6px;
-}
-.ilimit-row.show{display:flex}
-.ilimit-row .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
-.ilimit-row .field-mini{display:flex;align-items:baseline;background:#0a0d13;border:1px solid var(--line);border-radius:6px;padding:4px 8px;gap:4px;flex:1}
-.ilimit-row .field-mini input{width:100%;background:transparent;border:0;outline:none;font-family:var(--mono);font-size:13px;color:var(--text);font-variant-numeric:tabular-nums}
-.ilimit-row .field-mini .u{font-family:var(--mono);font-size:11px;color:var(--muted)}
-.ilimit-row .pill{padding:2px 7px;border-radius:4px;font-size:10.5px;font-family:var(--mono);letter-spacing:.05em;border:1px solid transparent}
-.ilimit-row .pill.cv{color:#a4f0c8;border-color:#1f5a3c;background:#102016}
-.ilimit-row .pill.cc{color:#ffcf94;border-color:#5a4520;background:#1f160a}
-.ilimit-row .pill.tripped{color:#ffb4b4;border-color:#542424;background:#1c0e0e}
 
 /* Dial (alternative input mode) */
 .dial-wrap{display:none;flex-direction:column;align-items:center;gap:10px;padding:6px 0 2px}
@@ -477,10 +451,6 @@ canvas#graph{display:block;width:100%;height:380px}
     <h1>Sign in</h1>
     <p class="hint">Access the Voltbench control panel.</p>
     <div class="err" id="login-err">Incorrect password.</div>
-    <label class="field">
-      <label>Username</label>
-      <input class="input" type="text" name="user" value="admin" autocomplete="username">
-    </label>
     <label class="field">
       <label>Password</label>
       <input class="input" type="password" name="pass" placeholder="••••••••" autocomplete="current-password" required>
@@ -560,7 +530,6 @@ canvas#graph{display:block;width:100%;height:380px}
           <button data-w="60000">1m</button>
           <button data-w="300000" class="active">5m</button>
           <button data-w="900000">15m</button>
-          <button data-w="3600000">1h</button>
           <button data-w="0">All</button>
         </div>
         <span class="label" style="margin-left:8px">Channels</span>
@@ -676,25 +645,21 @@ canvas#graph{display:block;width:100%;height:380px}
           <h3>Firmware update (OTA)</h3>
           <p class="desc">Pulls firmware over HTTPS from the configured base URL. Use <em>force push</em> to install regardless of version.</p>
 
-          <div class="field">
-            <label>OTA base URL</label>
-            <input class="input" id="ota-url" type="url" placeholder="https://example.com/firmware/">
-          </div>
-
           <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:4px">
-            <label class="row" style="border:0;padding:6px 0;flex:1;min-width:240px">
-              <div class="k"><span class="lbl">Verify SSL certificate</span><span class="sub">Disable only if your host uses self-signed certs</span></div>
-              <span class="toggle"><input type="checkbox" id="ota-ssl" checked><span class="track"></span></span>
-            </label>
             <label class="row" style="border:0;padding:6px 0;flex:1;min-width:240px">
               <div class="k"><span class="lbl">Auto-check on boot</span><span class="sub">Compare <code class="mono">version.txt</code> at startup</span></div>
               <span class="toggle"><input type="checkbox" id="ota-auto" checked><span class="track"></span></span>
             </label>
           </div>
 
-          <div class="banner danger" id="ota-warn" style="display:none">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01"/></svg>
-            SSL verification disabled — firmware integrity is not checked against a trusted CA.
+          <p class="hint" style="font-size:11.5px;color:var(--amber)">Firmware is pulled from this project's GitHub releases over HTTPS <em>without certificate verification</em> — authenticity is not TLS-verified.</p>
+
+          <div class="field" style="margin-top:12px">
+            <label>Upload firmware (.bin) directly — no server needed</label>
+            <div style="display:flex;gap:8px">
+              <input class="input" type="file" id="ota-file" accept=".bin" style="padding:7px 12px">
+              <button class="btn" id="ota-upload">Upload &amp; flash</button>
+            </div>
           </div>
 
           <div class="progress" id="ota-progress"><div class="bar" id="ota-bar"></div></div>
@@ -710,13 +675,6 @@ canvas#graph{display:block;width:100%;height:380px}
         <div class="card" style="grid-column:span 2">
           <h3>Experimental</h3>
           <p class="desc">Features that aren't fully baked. Toggle at your own risk.</p>
-          <div class="row">
-            <div class="k">
-              <span class="lbl">Current monitoring</span>
-              <span class="sub">Show per-channel current draw when shunt sensor is fitted. Requires hardware mod.</span>
-            </div>
-            <label class="toggle"><input type="checkbox" id="opt-current"><span class="track"></span></label>
-          </div>
           <div class="row">
             <div class="k">
               <span class="lbl">Fast sampling (250 ms)</span>
@@ -743,31 +701,17 @@ canvas#graph{display:block;width:100%;height:380px}
             <button class="btn" id="factory-btn">Factory reset</button>
           </div>
         </div>
-        <!-- SAFETY GUARDS -->
+
+        <!-- CALIBRATION -->
         <div class="card">
-          <h3>Safety guards</h3>
-          <p class="desc">Automatically cut a channel when it draws too much current or the regulator gets too hot. Trips appear in the event log.</p>
-          <div class="row">
-            <div class="k"><span class="lbl">Over-current shutoff</span><span class="sub">Per-channel limit set on each card</span></div>
-            <label class="toggle"><input type="checkbox" id="ocp-en" checked><span class="track"></span></label>
-          </div>
-          <div class="row">
-            <div class="k"><span class="lbl">Over-temperature shutoff</span><span class="sub">Latches if NTC exceeds threshold</span></div>
-            <label class="toggle"><input type="checkbox" id="otp-en" checked><span class="track"></span></label>
-          </div>
-          <div class="field" style="margin-top:8px">
-            <label>Over-temp threshold (°C)</label>
-            <input class="input" type="number" id="otp-temp" value="85" min="40" max="120">
-          </div>
-          <div class="row">
-            <div class="k"><span class="lbl">Auto-recover after trip</span><span class="sub">Retry once after 5 seconds before latching</span></div>
-            <label class="toggle"><input type="checkbox" id="guard-recover"><span class="track"></span></label>
-          </div>
+          <h3>Calibration</h3>
+          <p class="desc">Sweeps CH1 across all 128 wiper steps to build the step→voltage map used for fast, accurate set-points. <strong>Disconnect any load from CH1 first</strong> — the output ramps to its maximum during the sweep (~1 min).</p>
+          <div class="row"><div class="k"><span class="lbl">Map status</span></div><span class="badge" id="cal-badge">—</span></div>
           <div class="row action">
-            <button class="btn primary" id="save-guard">Save</button>
+            <button class="btn" id="cal-clear">Clear map</button>
+            <button class="btn primary" id="cal-run">Run sweep</button>
           </div>
         </div>
-
         <!-- WEBSOCKET API HELP -->
         <div class="card" style="grid-column:span 2">
           <h3>WebSocket API</h3>
@@ -784,8 +728,8 @@ canvas#graph{display:block;width:100%;height:380px}
           <div class="field" style="margin-top:12px">
             <label>Server push format (250 ms or 1 s)</label>
             <pre style="background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;margin:4px 0 0;line-height:1.6;white-space:pre-wrap">{"output1":true,"output2":false,"output3":false,
-"voltage1":4.998,"voltage2":5.012,"voltage3":3.303,
-"set1":5.000,"current1":0.082,"trip1":false,"trip2":false,"trip3":false,"ts":12345}</pre>
+"voltage1":5.00,"voltage2":5.01,"voltage3":3.30,
+"set1":5.00,"cal":true,"state":"frozen","ts":12345}</pre>
           </div>
 
           <div class="field" style="margin-top:12px">
@@ -796,12 +740,8 @@ canvas#graph{display:block;width:100%;height:380px}
 // Set variable voltage  (volts, channel 1 only)
 {"action":"set_voltage","output":1,"value":5.0,"token":"YOUR_TOKEN"}
 
-// Set current limit  (amps, output 1-3)
-{"action":"set_ilimit","output":1,"value":1.5,"token":"YOUR_TOKEN"}
-
-// All outputs off / clear trips
-{"action":"all_off","token":"YOUR_TOKEN"}
-{"action":"clear_trip","token":"YOUR_TOKEN"}</pre>
+// All outputs off
+{"action":"all_off","token":"YOUR_TOKEN"}</pre>
           </div>
 
           <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">
@@ -810,44 +750,6 @@ canvas#graph{display:block;width:100%;height:380px}
               <code class="mono" id="ws-token" style="font-size:11.5px;color:var(--muted)">—</code>
               <button class="btn ghost" style="padding:3px 10px;font-size:11px" id="copy-ws-token">Copy</button>
             </div>
-          </div>
-        </div>
-
-        <!-- PID Controller -->
-        <div class="card">
-          <h3>PID Voltage Control</h3>
-          <p class="desc">Closed-loop PID corrects formula error after each setpoint change. Auto-tune runs a relay test at the current setpoint to find optimal gains — leave output on and voltage set before tuning.</p>
-          <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
-            <span class="lbl">State:</span>
-            <span id="pid-state-badge" class="badge">idle</span>
-            <span class="sub" id="pid-tuned-label"></span>
-          </div>
-          <div class="row" style="gap:16px;flex-wrap:wrap;margin-top:8px">
-            <div class="field" style="flex:1;min-width:80px"><label>Kp</label><input class="input" id="pid-kp" type="number" step="0.001" min="0"></div>
-            <div class="field" style="flex:1;min-width:80px"><label>Ki</label><input class="input" id="pid-ki" type="number" step="0.001" min="0"></div>
-            <div class="field" style="flex:1;min-width:80px"><label>Kd</label><input class="input" id="pid-kd" type="number" step="0.001" min="0"></div>
-          </div>
-          <div class="row" style="gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
-            <span class="lbl" style="min-width:110px">Control mode</span>
-            <select class="input" id="ctrl-mode" style="flex:1;min-width:140px">
-              <option value="0">Quick (one-shot + cache)</option>
-              <option value="1">Continuous</option>
-              <option value="2">Timed</option>
-            </select>
-            <div id="ctrl-timed-row" style="display:none;gap:8px;align-items:center">
-              <span class="lbl">Timeout</span>
-              <select class="input" id="ctrl-timeout">
-                <option value="1000">1 s</option>
-                <option value="3000">3 s</option>
-                <option value="5000">5 s</option>
-                <option value="10000">10 s</option>
-              </select>
-            </div>
-          </div>
-          <div class="row" style="gap:8px;margin-top:8px">
-            <button class="btn primary" id="pid-save">Save</button>
-            <button class="btn ghost" id="pid-tune">Auto-tune</button>
-            <button class="btn ghost" id="pid-reset">Reset Defaults</button>
           </div>
         </div>
 
@@ -870,6 +772,13 @@ canvas#graph{display:block;width:100%;height:380px}
             <button class="btn ghost" id="mqtt-test">Test</button>
             <button class="btn primary" id="save-mqtt">Save</button>
           </div>
+        </div>
+
+        <!-- DEVICE LOG -->
+        <div class="card" style="grid-column:span 2">
+          <h3>Device log</h3>
+          <p class="desc">Live firmware log — control activity, Wi-Fi events, OTA progress. Same stream as telnet port 23.</p>
+          <pre id="devlog" style="background:#0a0d13;border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:220px;overflow:auto;font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre-wrap;margin:0">connecting…</pre>
         </div>
 
       </div>
@@ -901,21 +810,16 @@ const demo = (() => {
     captive: false,
     require_login: true,
     password: "admin",
-    ota_url: "https://updates.example.com/voltbench/",
-    ota_ssl: true,
+    vmax: 19.0,
     ota_auto: true,
     fast: true,
     smooth: false,
-    current_enabled: false,
     dial: false,
-    guard: {ocp:true, otp:true, otp_temp:85, recover:false},
+    cal: true,
     mqtt: {enabled:false, host:"", port:1883, user:"", topic:"voltbench"},
     output1: false, output2: false, output3: false,
     voltage1: 5.00, set1: 5.00,
-    ilim1: 1.0, ilim2: 1.5, ilim3: 1.0,
     measured1: 0, measured2: 0, measured3: 0,
-    current1: 0, current2: 0, current3: 0,
-    trip1: false, trip2: false, trip3: false,
     savedSSIDs: ["lab-network", "home-2.4G"]
   };
   // Drift simulation
@@ -924,9 +828,6 @@ const demo = (() => {
     state.measured1 = state.output1 ? Math.max(0, state.set1 + noise()) : 0 + noise()*0.2;
     state.measured2 = state.output2 ? 5.00 + noise() : 0;
     state.measured3 = state.output3 ? 3.30 + noise() : 0;
-    state.current1  = state.output1 ? 0.082 + Math.random()*0.04 : 0;
-    state.current2  = state.output2 ? 0.140 + Math.random()*0.06 : 0;
-    state.current3  = state.output3 ? 0.045 + Math.random()*0.02 : 0;
   }, 120);
 
   return async (path, opts={}) => {
@@ -948,17 +849,12 @@ const demo = (() => {
     if (p === "/api/status") {
       return {
         output1:state.output1, output2:state.output2, output3:state.output3,
-        voltage1:+state.measured1.toFixed(3),
-        voltage2:+state.measured2.toFixed(3),
-        voltage3:+state.measured3.toFixed(3),
-        current1:+state.current1.toFixed(3),
-        current2:+state.current2.toFixed(3),
-        current3:+state.current3.toFixed(3),
-        cc1: state.current1 > state.ilim1 * 0.95,
-        cc2: state.current2 > state.ilim2 * 0.95,
-        cc3: state.current3 > state.ilim3 * 0.95,
-        trip1: state.trip1, trip2: state.trip2, trip3: state.trip3,
+        voltage1:+state.measured1.toFixed(2),
+        voltage2:+state.measured2.toFixed(2),
+        voltage3:+state.measured3.toFixed(2),
         set1:state.set1,
+        cal:state.cal,
+        state:"frozen",
         ts: Date.now(),
       };
     }
@@ -969,9 +865,9 @@ const demo = (() => {
         uptime: Math.floor((Date.now()-state.bootMs)/1000),
         require_login:state.require_login,
         captive: state.captive,
-        ota:{url:state.ota_url, ssl:state.ota_ssl, auto:state.ota_auto},
-        exp:{current:state.current_enabled, fast:state.fast, smooth:state.smooth, dial:state.dial},
-        guard: state.guard,
+        vmax: state.vmax,
+        ota:{auto:state.ota_auto},
+        exp:{fast:state.fast, smooth:state.smooth, dial:state.dial},
         mqtt: state.mqtt,
         saved_ssids: state.savedSSIDs
       };
@@ -984,12 +880,8 @@ const demo = (() => {
       } else if (body.action === "set_voltage") {
         state.set1 = +body.value;
         state.voltage1 = state.set1;
-      } else if (body.action === "set_ilimit") {
-        state["ilim"+(+body.output)] = +body.value;
       } else if (body.action === "all_off") {
         state.output1 = state.output2 = state.output3 = false;
-      } else if (body.action === "clear_trip") {
-        state.trip1 = state.trip2 = state.trip3 = false;
       }
       return {ok:true};
     }
@@ -1002,9 +894,8 @@ const demo = (() => {
       if (s.mdns) state.mdns = s.mdns;
       if (typeof s.require_login === "boolean") state.require_login = s.require_login;
       if (s.password) state.password = s.password;
-      if (s.ota) Object.assign(state, {ota_url:s.ota.url ?? state.ota_url, ota_ssl:s.ota.ssl ?? state.ota_ssl, ota_auto:s.ota.auto ?? state.ota_auto});
-      if (s.exp) Object.assign(state, {current_enabled:s.exp.current ?? state.current_enabled, fast:s.exp.fast ?? state.fast, smooth:s.exp.smooth ?? state.smooth, dial:s.exp.dial ?? state.dial});
-      if (s.guard) state.guard = {...state.guard, ...s.guard};
+      if (s.ota) Object.assign(state, {ota_auto:s.ota.auto ?? state.ota_auto});
+      if (s.exp) Object.assign(state, {fast:s.exp.fast ?? state.fast, smooth:s.exp.smooth ?? state.smooth, dial:s.exp.dial ?? state.dial});
       if (s.mqtt) state.mqtt = {...state.mqtt, ...s.mqtt};
       return {ok:true};
     }
@@ -1036,6 +927,9 @@ const demo = (() => {
     if (p === "/api/ota/update" || p === "/api/ota/force") {
       return {ok:true, started:true};
     }
+    if (p === "/api/cal/status") return {running:false, valid:state.cal};
+    if (p === "/api/cal/sweep")  { state.cal = true;  return {ok:true}; }
+    if (p === "/api/cal/clear")  { state.cal = false; return {ok:true}; }
     if (p === "/api/reboot") return {ok:true};
     if (p === "/api/factory_reset" && opts.method==="POST") {
       localStorage.removeItem("ps_hist");
@@ -1046,20 +940,17 @@ const demo = (() => {
   };
 })();
 
+const DEMO = location.protocol === "file:" || !location.host;   // standalone preview only
 async function api(path, opts={}){
+  if (DEMO) return demo(path, opts);
   const headers = opts.headers || {};
   const tok = sessionStorage.getItem("ps_token");
   if (tok) headers["X-Auth"] = tok;
   if (opts.body && typeof opts.body === "string" && !headers["Content-Type"])
     headers["Content-Type"] = "application/json";
-  try {
-    const r = await fetch(path, {...opts, headers});
-    if (r.status === 401){ sessionStorage.removeItem("ps_authed"); sessionStorage.removeItem("ps_token"); location.reload(); throw new Error("auth"); }
-    if (r.status === 404) return demo(path, opts);
-    return await r.json();
-  } catch(e){
-    return demo(path, opts);
-  }
+  const r = await fetch(path, {...opts, headers});    // failures propagate to callers
+  if (r.status === 401){ sessionStorage.removeItem("ps_authed"); sessionStorage.removeItem("ps_token"); location.reload(); throw new Error("auth"); }
+  return await r.json();
 }
 
 /* ---------- WebSocket (optional, falls back to polling) ----------- */
@@ -1088,6 +979,7 @@ function connectWS(){
 /* ---------- Tiny utilities ----------------------------------------- */
 const $  = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 function toast(ttl, msg, kind="ok"){
   const el = document.createElement("div");
@@ -1180,22 +1072,6 @@ function renderChannels(){
         <span class="num" data-meas>0.000</span>
         <span class="unit">V</span>
         <span class="delta" data-delta></span>
-      </div>
-
-      <div class="current-row" data-current>
-        <span class="lbl">Current</span>
-        <span class="val" data-i>0.000</span>
-        <span class="u">A</span>
-        <span class="exp">EXPERIMENTAL</span>
-      </div>
-
-      <div class="ilimit-row" data-ilimit>
-        <span class="lbl">Limit</span>
-        <div class="field-mini">
-          <input type="number" step="0.05" min="0.05" max="3" value="1.00" data-ilim>
-          <span class="u">A</span>
-        </div>
-        <span class="pill cv" data-mode>CV</span>
       </div>
 
       <div class="ch-controls">
@@ -1300,25 +1176,6 @@ function renderChannels(){
         if (!dragging) return; dragging = false;
         await submit();
       });
-
-      // Current limit
-      const ilim = el.querySelector("[data-ilim]");
-      ilim.addEventListener("change", async ()=>{
-        const v = Math.max(0.05, Math.min(3, +ilim.value || 1));
-        ilim.value = v.toFixed(2);
-        await api("/api/control", {method:"POST", body:new URLSearchParams({action:"set_ilimit", output:c.n, value:v})});
-        pushEvt("set", c.n, v, `I limit ${v.toFixed(2)} A`);
-      });
-    } else {
-      // Fixed channels: current limit input only
-      const ilim = el.querySelector("[data-ilim]");
-      if (ilim){
-        ilim.addEventListener("change", async ()=>{
-          const v = Math.max(0.05, Math.min(3, +ilim.value || 1));
-          ilim.value = v.toFixed(2);
-          await api("/api/control", {method:"POST", body:new URLSearchParams({action:"set_ilimit", output:c.n, value:v})});
-        });
-      }
     }
   }
 }
@@ -1332,7 +1189,7 @@ function paintChannels(s){
     el.querySelector(".state-text").textContent = on ? "ON" : "OFF";
     const meas = el.querySelector("[data-meas]");
     const v = emaFilter(c.n, s["voltage"+c.n] || 0);
-    meas.textContent = v.toFixed(1);
+    meas.textContent = v.toFixed(2);
 
     if (c.hasSlider){
       const set = s.set1 || 0;
@@ -1353,23 +1210,6 @@ function paintChannels(s){
       }
     }
 
-    const showI = !!info?.exp?.current;
-    const cur = el.querySelector("[data-current]");
-    const ilim = el.querySelector("[data-ilimit]");
-    if (showI){
-      cur.classList.add("show");
-      ilim.classList.add("show");
-      cur.querySelector("[data-i]").textContent = (s["current"+c.n]||0).toFixed(3);
-      // CV/CC/Tripped pill
-      const mode = el.querySelector("[data-mode]");
-      const trip = s["trip"+c.n];
-      if (trip){ mode.textContent = "TRIPPED"; mode.className = "pill tripped"; }
-      else if (s["cc"+c.n]){ mode.textContent = "CC"; mode.className = "pill cc"; }
-      else { mode.textContent = "CV"; mode.className = "pill cv"; }
-    } else {
-      cur.classList.remove("show");
-      ilim.classList.remove("show");
-    }
   }
   $("#last-sample").textContent = fmtTime(s.ts);
 }
@@ -1423,9 +1263,6 @@ function syncChannelControls(s){
 }
 
 /* ---------- Polling ----------------------------------------------- */
-const PID_STATE_LABEL = {idle:"Idle",settling:"Settling…",running:"Running",converged:"Converged",tuning:"Tuning…"};
-const PID_STATE_CLASS  = {idle:"",settling:"warn",running:"warn",converged:"ok",tuning:"warn"};
-
 function onStatus(s){
   lastStatus = s;
   paintChannels(s);
@@ -1435,20 +1272,6 @@ function onStatus(s){
   $("#conn-pill").classList.remove("err","warn");
   $("#conn-pill").classList.add("ok");
   $("#conn-text").textContent = wsAlive ? "Live" : "Connected";
-  // PID state badge
-  if (s.pid_state) {
-    const badge = $("#pid-state-badge");
-    if (badge) {
-      badge.textContent = PID_STATE_LABEL[s.pid_state] || s.pid_state;
-      badge.className = "badge " + (PID_STATE_CLASS[s.pid_state] || "");
-    }
-    // After tuning completes, refresh gains
-    if (s.pid_state === "converged" && badge && badge._wastuning) {
-      badge._wastuning = false;
-      loadInfo();
-    }
-    if (s.pid_state === "tuning" && badge) badge._wastuning = true;
-  }
 }
 
 async function pull(){
@@ -1674,9 +1497,9 @@ function renderSSIDs(){
   if (!scannedNets.length){ root.innerHTML = `<div class="empty">No networks yet.</div>`; return; }
   const saved = new Set(info?.saved_ssids || []);
   root.innerHTML = scannedNets.sort((a,b)=>b.rssi-a.rssi).map(n=>`
-    <div class="ssid-row" data-ssid="${n.ssid}">
+    <div class="ssid-row" data-ssid="${esc(n.ssid)}">
       <div>
-        <div class="name">${n.ssid}${saved.has(n.ssid)?' <span class="kbd" style="margin-left:6px">saved</span>':''}</div>
+        <div class="name">${esc(n.ssid)}${saved.has(n.ssid)?' <span class="kbd" style="margin-left:6px">saved</span>':''}</div>
       </div>
       <span class="rssi">${n.rssi} dBm</span>
       <span class="lock">${n.sec==="open" ? "" : "🔒"}</span>
@@ -1695,19 +1518,23 @@ function renderSSIDs(){
 
 /* ---------- Info refresh ------------------------------------------ */
 async function loadInfo(){
-  info = await api("/api/info");
-  // Always-update display fields (read-only, never cause form revert)
+  let next;
+  try { next = await api("/api/info"); } catch(e){ return; }   // offline: keep last info
+  info = next;
+  const full = "ip" in info;                                   // authed => full payload
   $("#brand-mdns").textContent = info.mdns + ".local";
   $("#mdns-preview").textContent = info.mdns;
+  $("#info-fw").textContent = "v" + info.fw;
+  $("#captive-banner").style.display = info.captive ? "flex" : "none";
+  $("#logout-btn").style.display = info.require_login ? "grid" : "none";
+  if (!full) return;
+  // ---- full (authed) payload: read-only display fields ----
   $("#info-ssid").textContent = info.ssid;
   $("#info-ip").textContent = info.ip;
   $("#info-mac").textContent = info.mac;
   $("#info-rssi").textContent = info.rssi + " dBm";
-  $("#info-fw").textContent = "v" + info.fw;
   $("#info-uptime").textContent = fmtUptime(info.uptime);
   $("#conn-ip").textContent = info.ip;
-  // Captive portal banner always updates
-  $("#captive-banner").style.display = info.captive ? "flex" : "none";
   // WebSocket help card
   const wsBase = info.ip ? `ws://${info.ip}/ws` : `ws://${info.mdns}.local/ws`;
   const wsUrlEl = $("#ws-url"); if (wsUrlEl) wsUrlEl.textContent = wsBase;
@@ -1716,45 +1543,22 @@ async function loadInfo(){
     const tok = sessionStorage.getItem("ps_token");
     wsTokEl.textContent = tok || (info.require_login ? "(log in first)" : "not required");
   }
-  // Logout button visibility always updates
-  $("#logout-btn").style.display = info?.require_login ? "grid" : "none";
   // Settings form fields — only sync when user is NOT on the settings tab.
   // Prevents the 10-second periodic refresh from overwriting unsaved changes.
   if (!settingsTabActive){
     $("#mdns-input").value = info.mdns;
     $("#opt-login").checked = info.require_login;
-    $("#ota-url").value = info.ota.url;
-    $("#ota-ssl").checked = info.ota.ssl;
-    $("#ota-auto").checked = info.ota.auto;
-    $("#ota-warn").style.display = info.ota.ssl ? "none" : "flex";
-    $("#opt-current").checked = info.exp.current;
+    if (info.ota) $("#ota-auto").checked = info.ota.auto;
     $("#opt-fast").checked = info.exp.fast;
     $("#opt-smooth").checked = info.exp.smooth;
     $("#opt-dial").checked = !!info.exp.dial;
     applyDialMode();
-    const g = info.guard || {};
-    $("#ocp-en").checked = !!g.ocp;
-    $("#otp-en").checked = !!g.otp;
-    $("#otp-temp").value = g.otp_temp ?? 85;
-    $("#guard-recover").checked = !!g.recover;
     const m = info.mqtt || {};
     $("#mqtt-en").checked = !!m.enabled;
     $("#mqtt-host").value = m.host || "";
     $("#mqtt-port").value = m.port || 1883;
     $("#mqtt-user").value = m.user || "";
     $("#mqtt-topic").value = m.topic || "voltbench";
-    const p = info.pid || {};
-    $("#pid-kp").value = (p.kp ?? 0.5).toFixed(3);
-    $("#pid-ki").value = (p.ki ?? 0.1).toFixed(3);
-    $("#pid-kd").value = (p.kd ?? 0.02).toFixed(3);
-    $("#pid-tuned-label").textContent = p.tuned ? "Tuned" : "Default gains";
-    const c = info.ctrl || {};
-    const modeEl = $("#ctrl-mode");
-    if (modeEl) modeEl.value = c.mode ?? 0;
-    const toEl = $("#ctrl-timeout");
-    if (toEl) toEl.value = c.timeout_ms ?? 5000;
-    const timedRow = $("#ctrl-timed-row");
-    if (timedRow) timedRow.style.display = (+(c.mode ?? 0) === 2) ? "flex" : "none";
   }
 }
 
@@ -1778,12 +1582,15 @@ async function startApp(){
   $("#app").style.display = "grid";
   $("#logout-btn").style.display = info?.require_login ? "grid" : "none";
 
+  if (info?.vmax) channels[0].max = Math.round(info.vmax * 10) / 10;
   renderChannels();
   applyDialMode();
   startPolling();
   connectWS();
+  connectLogWS();
   pull();
   renderEvents();
+  refreshCal();
 }
 
 async function tryLogin(pass){
@@ -1798,7 +1605,7 @@ async function tryLogin(pass){
 
 async function bootstrap(){
   await loadInfo();
-  if (info.require_login && !sessionStorage.getItem("ps_authed")){
+  if (info?.require_login && !sessionStorage.getItem("ps_authed")){
     $("#login-view").classList.add("active");
   } else {
     startApp();
@@ -1916,98 +1723,75 @@ $("#wifi-forget").addEventListener("click", async ()=>{
 });
 
 /* Settings — OTA */
-$("#ota-ssl").addEventListener("change", e=>{
-  $("#ota-warn").style.display = e.target.checked ? "none" : "flex";
-});
 async function saveOta(){
-  await api("/api/settings", {method:"POST", body: JSON.stringify({
-    ota:{url:$("#ota-url").value.trim(), ssl:$("#ota-ssl").checked, auto:$("#ota-auto").checked}
-  })});
+  await api("/api/settings", {method:"POST", body: JSON.stringify({ota:{auto:$("#ota-auto").checked}})});
 }
-$("#ota-url").addEventListener("change", saveOta);
-$("#ota-ssl").addEventListener("change", saveOta);
 $("#ota-auto").addEventListener("change", saveOta);
 
 $("#ota-check").addEventListener("click", async ()=>{
-  await saveOta();
-  const r = await api("/api/ota/check");
-  if (r.newer) toast("Update available", `Current v${r.current} → latest v${r.latest}`,"warn");
-  else toast("Up to date", `Running latest v${r.current}`);
+  const btn = $("#ota-check"); btn.disabled = true;
+  let r; try { r = await api("/api/ota/check"); } catch(e){ r = null; }
+  for (let i = 0; r && r.checking && i < 15; i++){
+    await new Promise(res=>setTimeout(res, 2000));
+    try { r = await api("/api/ota/check"); } catch(e){ r = null; }
+  }
+  btn.disabled = false;
+  if (!r || r.checking || r.latest === "unknown") return toast("Check failed","Could not reach GitHub","err");
+  if (r.newer) toast("Update available", `v${r.current} → v${r.latest}`,"warn");
+  else toast("Up to date", `v${r.current} is the latest release`);
 });
 
 async function runOta(force){
-  if (force && !confirm("Force-push the latest firmware regardless of version? The device will reboot.")) return;
-  await saveOta();
-  const bar = $("#ota-bar"), wrap = $("#ota-progress");
-  wrap.classList.add("show"); bar.style.width = "0%";
-  await api(force ? "/api/ota/force" : "/api/ota/update");
-  let p = 0;
-  const tick = setInterval(()=>{
-    p = Math.min(100, p + 6 + Math.random()*10);
-    bar.style.width = p + "%";
-    if (p>=100){ clearInterval(tick); toast("OTA complete","Device will reboot shortly."); setTimeout(()=>wrap.classList.remove("show"),2000); }
-  }, 380);
+  if (!confirm(force
+    ? "Force-flash the latest GitHub release? All outputs turn off when the device reboots."
+    : "Update if a newer release exists? All outputs turn off when the device reboots.")) return;
+  let r; try { r = await api(force ? "/api/ota/force" : "/api/ota/update", {method:"POST"}); } catch(e){ r = null; }
+  if (!r || !r.ok) return toast("OTA error","Could not start the update","err");
+  toast("OTA started","Downloading from GitHub — the device reboots if it flashes. Watch the device log.","warn");
+  const was = info?.fw;
+  const poll = setInterval(async ()=>{
+    try { const i = await api("/api/info"); if (i.fw && i.fw !== was){ clearInterval(poll); toast("Updated", `Now running v${i.fw}`); loadInfo(); } } catch(_){}
+  }, 3000);
+  setTimeout(()=>clearInterval(poll), 180000);
 }
 $("#ota-update").addEventListener("click", ()=> runOta(false));
 $("#ota-force").addEventListener("click", ()=> runOta(true));
 
+/* Settings — OTA web upload */
+$("#ota-upload").addEventListener("click", ()=>{
+  const f = $("#ota-file").files[0];
+  if (!f) return toast("No file","Choose a compiled .bin first","err");
+  if (!confirm(`Flash ${f.name} (${(f.size/1024).toFixed(0)} KB)? All outputs turn off when the device reboots.`)) return;
+  const bar = $("#ota-bar"), wrap = $("#ota-progress");
+  wrap.classList.add("show"); bar.style.width = "0%";
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/ota/upload");
+  const tok = sessionStorage.getItem("ps_token");
+  if (tok) xhr.setRequestHeader("X-Auth", tok);
+  xhr.upload.onprogress = e => { if (e.lengthComputable) bar.style.width = (e.loaded/e.total*100).toFixed(0)+"%"; };
+  xhr.onload = ()=>{
+    let ok = false; try { ok = JSON.parse(xhr.responseText).ok; } catch(_){}
+    if (ok){ bar.style.width = "100%"; toast("Flashed","Device is rebooting with the new firmware."); }
+    else toast("Upload failed", xhr.responseText || "Update error", "err");
+    setTimeout(()=>wrap.classList.remove("show"), 2000);
+  };
+  xhr.onerror = ()=>{ toast("Upload failed","Connection error","err"); wrap.classList.remove("show"); };
+  const fd = new FormData(); fd.append("f", f, f.name);
+  xhr.send(fd);
+});
+
 /* Settings — experimental */
 async function saveExp(){
   await api("/api/settings", {method:"POST", body: JSON.stringify({
-    exp:{current:$("#opt-current").checked, fast:$("#opt-fast").checked, smooth:$("#opt-smooth").checked, dial:$("#opt-dial").checked}
+    exp:{fast:$("#opt-fast").checked, smooth:$("#opt-smooth").checked, dial:$("#opt-dial").checked}
   })});
-  info.exp = {current:$("#opt-current").checked, fast:$("#opt-fast").checked, smooth:$("#opt-smooth").checked, dial:$("#opt-dial").checked};
+  info.exp = {fast:$("#opt-fast").checked, smooth:$("#opt-smooth").checked, dial:$("#opt-dial").checked};
   startPolling();
   applyDialMode();
 }
-$("#opt-current").addEventListener("change", ()=>{ saveExp(); if (lastStatus) paintChannels(lastStatus); });
 $("#opt-fast").addEventListener("change", saveExp);
 $("#opt-smooth").addEventListener("change", saveExp);
 $("#opt-dial").addEventListener("change", saveExp);
-
-/* Settings — safety guards */
-$("#save-guard").addEventListener("click", async ()=>{
-  await api("/api/settings", {method:"POST", body: JSON.stringify({
-    guard:{ocp:$("#ocp-en").checked, otp:$("#otp-en").checked, otp_temp:+$("#otp-temp").value||85, recover:$("#guard-recover").checked}
-  })});
-  toast("Guards saved","Safety thresholds applied.");
-});
-
-/* Settings — ctrl mode toggle */
-$("#ctrl-mode").addEventListener("change", ()=>{
-  const timedRow = $("#ctrl-timed-row");
-  if (timedRow) timedRow.style.display = +$("#ctrl-mode").value === 2 ? "flex" : "none";
-});
-
-/* Settings — PID + control mode */
-$("#pid-save").addEventListener("click", async ()=>{
-  const kp = +$("#pid-kp").value, ki = +$("#pid-ki").value, kd = +$("#pid-kd").value;
-  if (isNaN(kp)||isNaN(ki)||isNaN(kd)) return toast("Error","Invalid gain values.");
-  const mode       = +$("#ctrl-mode").value;
-  const timeout_ms = +$("#ctrl-timeout").value || 5000;
-  await api("/api/settings", {method:"POST", body: JSON.stringify({pid:{kp,ki,kd}, ctrl:{mode,timeout_ms}})});
-  const modeLabel = ["Quick","Continuous","Timed"][mode] ?? mode;
-  toast("PID & mode saved", `Kp=${kp.toFixed(3)}  Ki=${ki.toFixed(3)}  Kd=${kd.toFixed(3)} · Mode: ${modeLabel}`);
-  await loadInfo();
-});
-$("#pid-tune").addEventListener("click", async ()=>{
-  const btn = $("#pid-tune");
-  btn.disabled = true; btn.textContent = "Tuning…";
-  const r = await api("/api/pid/tune", {method:"POST"});
-  if (r && r.ok) {
-    toast("Auto-tune started","Relay test running — watch PID state badge. Takes up to 30 s.");
-  } else {
-    toast("Error", r?.err || "Could not start tune");
-    btn.disabled = false; btn.textContent = "Auto-tune";
-  }
-  // Re-enable button once state leaves "tuning" (handled by onStatus)
-  const reEnable = setInterval(()=>{ if (lastStatus?.pid_state !== "tuning") { btn.disabled=false; btn.textContent="Auto-tune"; clearInterval(reEnable); }}, 1000);
-});
-$("#pid-reset").addEventListener("click", async ()=>{
-  await api("/api/pid/reset", {method:"POST"});
-  toast("PID reset","Gains reset to defaults.");
-  await loadInfo();
-});
 
 /* Settings — MQTT */
 $("#save-mqtt").addEventListener("click", async ()=>{
@@ -2033,7 +1817,7 @@ $("#mqtt-test").addEventListener("click", async ()=>{
 
 $("#reboot-btn").addEventListener("click", async ()=>{
   if (!confirm("Reboot the device now?")) return;
-  await api("/api/reboot");
+  await api("/api/reboot", {method:"POST"});
   toast("Rebooting","Reconnecting in a few seconds…","warn");
 });
 $("#factory-btn").addEventListener("click", async ()=>{
@@ -2066,6 +1850,40 @@ if (copyWsUrl) copyWsUrl.addEventListener("click", ()=>{
   const url = $("#ws-url")?.textContent || "";
   copyText(url).then(()=> toast("Copied","WebSocket URL copied to clipboard"));
 });
+
+/* Settings — calibration */
+async function refreshCal(){
+  let r; try { r = await api("/api/cal/status"); } catch(e){ return; }
+  const b = $("#cal-badge");
+  if (r.running){ b.textContent = "SWEEPING…"; b.className = "badge warn"; setTimeout(refreshCal, 2000); }
+  else if (r.valid){ b.textContent = "CALIBRATED"; b.className = "badge ok"; }
+  else { b.textContent = "NOT CALIBRATED"; b.className = "badge warn"; }
+}
+$("#cal-run").addEventListener("click", async ()=>{
+  if (!confirm("Remove any load from CH1 — the output sweeps up to its maximum voltage. Start calibration (~1 min)?")) return;
+  const r = await api("/api/cal/sweep", {method:"POST"});
+  if (r.ok){ toast("Calibration started","CH1 is sweeping — watch the map status."); refreshCal(); }
+  else toast("Busy", r.err || "Controller is busy", "err");
+});
+$("#cal-clear").addEventListener("click", async ()=>{
+  if (!confirm("Clear the calibration map? Set-points fall back to the formula until you re-run the sweep.")) return;
+  await api("/api/cal/clear", {method:"POST"});
+  refreshCal(); toast("Cleared","Calibration map erased.");
+});
+
+/* Device log stream */
+let logWs = null;
+function connectLogWS(){
+  if (DEMO || logWs) return;
+  try { logWs = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/logws"); } catch(e){ return; }
+  const pane = $("#devlog");
+  logWs.onopen = ()=>{ pane.textContent = ""; };
+  logWs.onmessage = ev => {
+    pane.textContent = (pane.textContent + ev.data).split("\n").slice(-200).join("\n");
+    pane.scrollTop = pane.scrollHeight;
+  };
+  logWs.onclose = ()=>{ logWs = null; setTimeout(connectLogWS, 5000); };
+}
 
 /* periodic info refresh */
 setInterval(loadInfo, 10000);
