@@ -22,7 +22,8 @@ new design/README.md
 # Tool internals
 .claude/
 .playwright-mcp/
-docs/
+docs/*
+!docs/superpowers/
 
 # OS
 Thumbs.db
