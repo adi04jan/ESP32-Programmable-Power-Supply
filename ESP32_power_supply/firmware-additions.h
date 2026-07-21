@@ -282,7 +282,7 @@ void vb_start_captive_ap() {
   WiFi.softAP(apName.c_str());
   vb_dns.start(53, "*", WiFi.softAPIP());
   vb_in_captive = true;
-  Serial.printf("Captive AP: %s @ %s\n", apName.c_str(), WiFi.softAPIP().toString().c_str());
+  Dbg.printf("Captive AP: %s @ %s\n", apName.c_str(), WiFi.softAPIP().toString().c_str());
   // Scan is triggered by wifiMgrTask after an 800 ms settle delay, not here
 }
 
@@ -391,6 +391,8 @@ void vb_mqtt_setup() {
   if (!vb.mqtt_en || vb.mqtt_host.isEmpty()) return;
   vb_mqtt.setServer(vb.mqtt_host.c_str(), vb.mqtt_port);
   vb_mqtt.setCallback(vb_mqtt_cmd);
+  vb_mqtt.setSocketTimeout(2);      // seconds — an unreachable broker must not stall loop()
+  vb_mqtt_net.setTimeout(2000);     // ms — underlying WiFiClient read timeout
 }
 
 void vb_mqtt_loop() {
@@ -752,10 +754,10 @@ void vb_on_wifi_event(WiFiEvent_t event) {
       WiFi.mode(WIFI_STA);
       vb_in_captive = false;
       MDNS.begin(vb.mdns.c_str());
-      Serial.printf("Joined %s — captive AP down. IP=%s\n",
+      Dbg.printf("Joined %s — captive AP down. IP=%s\n",
                     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
     } else {
-      Serial.printf("WiFi reconnected: %s @ %s\n",
+      Dbg.printf("WiFi reconnected: %s @ %s\n",
                     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
     }
   }
@@ -774,7 +776,7 @@ static void wifiMgrTask(void*) {
   if (ok) {
     WiFi.setAutoReconnect(true);
     MDNS.begin(vb.mdns.c_str());
-    Serial.printf("WiFi OK: %s @ %s\n",
+    Dbg.printf("WiFi OK: %s @ %s\n",
                   WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
   } else {
     vb_start_captive_ap();
@@ -828,4 +830,5 @@ void vb_loop() {
   vb_push_status();
   vb_mqtt_loop();
   vb_ws.cleanupClients();
+  logws.cleanupClients();
 }

@@ -518,8 +518,8 @@ void setup() {
 #if ARDUINO_USB_CDC_ON_BOOT
   Serial.setTxTimeoutMs(0);   // never block on USB-CDC writes when no host is reading
 #endif
-  Serial.println();
-  Serial.println("Voltbench v" CURRENT_FIRMWARE_VERSION " booting...");
+  Dbg.println();
+  Dbg.println("Voltbench v" CURRENT_FIRMWARE_VERSION " booting...");
 
   pinMode(ENABLE_VV_PIN,  OUTPUT);
   pinMode(ENABLE_5V_PIN,  OUTPUT);
@@ -532,7 +532,7 @@ void setup() {
   analogReadResolution(12);
   Wire.begin();
   Wire.beginTransmission(MCP4017ADDRESS);
-  Serial.println(Wire.endTransmission() == 0 ? "MCP4017 OK @ 0x2F" : "WARNING: MCP4017 not found!");
+  Dbg.println(Wire.endTransmission() == 0 ? "MCP4017 OK @ 0x2F" : "WARNING: MCP4017 not found!");
 
   // Start non-blocking voltage control task on core 0 before anything else
   xTaskCreatePinnedToCore(voltageControlTask, "VoltCtrl", 4096, nullptr, 2, nullptr, 0);
@@ -579,9 +579,14 @@ void loop() {
   remote_debug_pump();            // telnet + browser log stream
 
   // Bench console over USB (same commands as telnet): v<volts> o1 o0 m c ?
-  if (Serial.available()) {
-    String l = Serial.readStringUntil('\n');
-    console_exec(l, Dbg);
+  // Non-blocking accumulator (readStringUntil would stall loop() up to 1 s
+  // per partially-typed line).
+  static String usbin;
+  while (Serial.available()) {
+    char ch = (char)Serial.read();
+    if (ch == '\n' || ch == '\r') {
+      if (usbin.length()) { console_exec(usbin, Dbg); usbin = ""; }
+    } else if (usbin.length() < 64) usbin += ch;
   }
   // Periodic telemetry while output 1 is on -> fans out to USB, telnet, web log.
   static uint32_t t_con = 0;
