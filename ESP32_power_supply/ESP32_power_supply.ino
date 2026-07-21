@@ -69,9 +69,24 @@ static float dpCalcR() {
 uint16_t          g_cal_mv[128]   = {0};
 volatile bool     g_cal_valid     = false;
 volatile bool     g_cal_sweep_req = false;   // set via API/console to (re)build the map
-volatile uint32_t g_display_mV    = 0;       // EMA-smoothed reading for the UI
+volatile uint32_t g_display_mV    = 0;       // median-of-5 reading for the UI
 void cal_save();                              // defined in firmware-additions.h (needs NVS)
 void cal_load();
+
+volatile uint32_t g_5v_mV  = 0;   // 5 V / 3.3 V rails, sampled by the control task
+volatile uint32_t g_3v3_mV = 0;   // so web handlers never touch the ADC
+
+// Median-of-5 display window: calm steady-state number, snapped on freeze.
+static uint32_t g_disp_ring[5];
+static uint8_t  g_disp_i = 0;
+static void disp_reset(uint32_t mv) {
+  for (int i = 0; i < 5; i++) g_disp_ring[i] = mv;
+  g_disp_i = 0; g_display_mV = mv;
+}
+static void disp_push(uint32_t mv) {
+  g_disp_ring[g_disp_i] = mv; g_disp_i = (g_disp_i + 1) % 5;
+  g_display_mV = cm_median5(g_disp_ring);
+}
 
 // =============================================================================
 //   Remote debug log — fans out to USB Serial + telnet (:23) + browser WS,
@@ -277,7 +292,7 @@ void run_cal_sweep() {
   g_cal_valid = true;
   cal_save();
   if (!was_on) setOutput(1, false);
-  g_display_mV  = 0;
+  disp_reset(0);
   g_vctrl_state = 0;
   Dbg.println("[Cal] sweep done + saved");
 }
@@ -288,102 +303,84 @@ static int cal_best_step(uint32_t target) { return cm_best_step(g_cal_mv, target
 void voltageControlTask(void* pvParameters) {
   uint32_t lastTarget    = g_target_mV;
   uint32_t settle_t      = 0;
-  uint8_t  state         = 0;
-  bool     pre_discharge = false;  // waiting for Vout to fall before applying the target step
-  int      pending_step  = 0;      // step to apply once pre-discharge completes
+  uint8_t  state         = 0;   // 0=idle 1=settling 2=verifying 3=frozen 4=busy
+  bool     pre_discharge = false;
+  int      pending_step  = 0;
 
   for (;;) {
     if (g_cal_sweep_req) { g_cal_sweep_req = false; run_cal_sweep(); lastTarget = 0; state = 0; continue; }
 
     uint32_t target = g_target_mV;
 
-    // Fresh filtered reading; EMA (a=1/4) feeds the smoothed display value.
+    // Fresh filtered reading (~200 ms) + rail housekeeping + display median.
     g_measured_mV = vctrl_sample();
-    if (g_display_mV == 0) {
-      g_display_mV = g_measured_mV;
-    } else {
-      int32_t d = (int32_t)g_display_mV;
-      d += ((int32_t)g_measured_mV - d) / 4;
-      g_display_mV = (uint32_t)d;
-    }
+    disp_push(g_measured_mV);
+    g_5v_mV  = (uint32_t)read_5V_volt();
+    g_3v3_mV = (uint32_t)read_3V3_volt();
 
-    if (target != lastTarget) {
+    if (target != lastTarget) {                       // new setpoint -> acquire
       lastTarget    = target;
       pre_discharge = false;
-
       if (target > (uint32_t)DC_V_REF) {
-        // Centre step: calibration map if built, else formula. Clamp to ceiling.
         int cstep      = g_cal_valid ? cal_best_step(target) : -1;
         int start_step = (cstep >= 0) ? cstep : cm_formula_step(target);
         int floor_step = cm_floor_step(target);
         if (start_step < floor_step) start_step = floor_step;
         pending_step   = start_step;
-
-        if (g_measured_mV > target + 300u) {   // discharge first if currently too high
-          dpSetStep(dpMaxSteps - 1);           // max R -> lowest V
+        if (g_measured_mV > target + 300u) {          // way high: discharge first
+          dpSetStep(dpMaxSteps - 1);
           pre_discharge = true;
           Dbg.printf("[VCtrl] pre-discharge: meas=%umV tgt=%umV\n", g_measured_mV, target);
         } else {
           dpSetStep(start_step);
           Dbg.printf("[VCtrl] target=%umV start step=%d (%s)\n",
-                        target, start_step, g_cal_valid ? "map" : "formula");
+                     target, start_step, g_cal_valid ? "map" : "formula");
         }
       }
       settle_t = millis();
       state = 1; g_vctrl_state = 1;
     }
 
-    // State 1: settle (or wait for pre-discharge to complete)
-    if (state == 1) {
+    if (state == 1) {                                 // settling / pre-discharging
       if (pre_discharge) {
         if (g_measured_mV <= target + 300u) {
           dpSetStep(pending_step);
           pre_discharge = false;
-          settle_t = millis();  // restart settle timer from here
-          Dbg.printf("[VCtrl] pre-discharge done: meas=%umV step=%d\n", g_measured_mV, pending_step);
+          settle_t = millis();
+          Dbg.printf("[VCtrl] pre-discharge done: step=%d\n", pending_step);
         }
-        // else keep sampling until voltage drops — don't advance state
       } else if (millis() - settle_t >= 300) {
         state = 2; g_vctrl_state = 2;
       }
     }
 
-    if (state == 2) {
+    if (state == 2) {                                 // verify + correct once, then freeze
       if (target > (uint32_t)DC_V_REF) {
-        // Trim ±2 steps (±1 without a map) around the centre; pick the closest
-        // measured step that doesn't overvolt, then FREEZE. Each live read also
-        // refreshes the map so it self-corrects for drift over time.
-        int centre     = g_wiper_step;
-        int floor_step = cm_floor_step(target);
-        int span       = g_cal_valid ? 2 : 1;
-        int lo = constrain(centre - span, floor_step, dpMaxSteps - 1);
-        int hi = constrain(centre + span, 0, dpMaxSteps - 1);
-
-        int      pick = hi;                       // default: lowest V in window (safe)
-        uint32_t pick_e = 0xFFFFFFFFu; bool pick_set = false;
-        for (int s = lo; s <= hi; s++) {
-          dpSetStep(s);
-          vTaskDelay(pdMS_TO_TICKS(200));         // settle the small move
-          uint32_t mv = vctrl_sample();
-          g_cal_mv[s] = (mv > 65000u) ? 65000u : (uint16_t)mv;   // keep the map fresh
-          if (mv > target + 300u) continue;       // never freeze on an overvolt step
-          uint32_t e = (target > mv) ? (target - mv) : (mv - target);
-          if (!pick_set || e < pick_e) { pick_e = e; pick = s; pick_set = true; }
+        int      s  = g_wiper_step;
+        uint32_t mv = g_measured_mV;                  // sample from the top of this pass
+        g_cal_mv[s] = (mv > 65000u) ? 65000u : (uint16_t)mv;   // map self-heals
+        int32_t err = (int32_t)mv - (int32_t)target;
+        int cand = cm_correction_step(g_cal_mv, s, cm_floor_step(target), err, target);
+        if (cand != s) {
+          dpSetStep(cand);
+          vTaskDelay(pdMS_TO_TICKS(300));
+          uint32_t mv2 = vctrl_sample();
+          g_cal_mv[cand] = (mv2 > 65000u) ? 65000u : (uint16_t)mv2;
+          uint32_t e1 = (err < 0) ? (uint32_t)(-err) : (uint32_t)err;
+          uint32_t e2 = (mv2 > target) ? mv2 - target : target - mv2;
+          bool ov1 = mv > target + 300u, ov2 = mv2 > target + 300u;
+          if (!ov2 && (ov1 || e2 <= e1)) { mv = mv2; }          // keep the correction
+          else { dpSetStep(s); vTaskDelay(pdMS_TO_TICKS(300)); mv = vctrl_sample(); }
         }
-        dpSetStep(pick);
-        g_measured_mV = vctrl_sample();
-        g_display_mV  = g_measured_mV;            // snap display to the new level
+        g_measured_mV = mv;
+        disp_reset(mv);                               // snap display to the new level
         Dbg.printf("[VCtrl] frozen: tgt=%umV meas=%umV step=%d R=%d\n",
-                      target, g_measured_mV, pick, (int)dpCalcR());
-        state = 3; g_vctrl_state = 3;
-      } else {
-        state = 3; g_vctrl_state = 3;
+                   target, mv, (int)g_wiper_step, (int)dpCalcR());
       }
+      state = 3; g_vctrl_state = 3;
     }
 
-    // Short idle delay -> the live reading (200 ms filtered sample) refreshes
-    // ~every 250 ms so the UI updates in real time.
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(50));   // ~250 ms loop incl. the 200 ms sample
   }
 }
 

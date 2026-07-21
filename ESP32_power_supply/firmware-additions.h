@@ -39,6 +39,7 @@ extern void setVoltage(float voltage);
 extern bool apply_command(const String &action, uint8_t ch, float val);
 extern int  read_5V_volt();
 extern int  read_3V3_volt();
+extern volatile uint32_t g_5v_mV, g_3v3_mV;   // rails sampled by the control task
 
 // Voltage-control state (defined in main sketch)
 extern volatile uint8_t  g_vctrl_state;
@@ -275,12 +276,10 @@ void vb_fill_status(JsonDocument &d) {
   d["output1"]  = psState.output1;
   d["output2"]  = psState.output2;
   d["output3"]  = psState.output3;
-  // Report the LIVE filtered reading so the UI updates in real time (noise and
-  // all, as requested). g_display_mV (EMA) is kept for the serial console only.
-  d["voltage1"] = g_measured_mV / 1000.0f;
+  d["voltage1"] = g_display_mV / 1000.0f;   // median-of-5 (spec §2.3)
   d["cal"]      = g_cal_valid;
-  d["voltage2"] = read_5V_volt()  / 1000.0f;
-  d["voltage3"] = read_3V3_volt() / 1000.0f;
+  d["voltage2"] = g_5v_mV  / 1000.0f;
+  d["voltage3"] = g_3v3_mV / 1000.0f;
   d["set1"]     = g_setpoint_mV / 1000.0f;
   d["ts"]       = (uint64_t)millis();
   static const char* const STATE_STR[] = {"idle","settling","verifying","frozen","busy"};
