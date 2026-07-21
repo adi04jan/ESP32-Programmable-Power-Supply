@@ -152,7 +152,7 @@ VOUT ──── 47 KΩ ──── GPIO0 ──── 1 KΩ ──── GND
 
 5. Open Serial Monitor at **115200 baud** — you should see:
    ```
-   Voltbench v2.1.0 booting...
+   Voltbench v3.0.0 booting...
    MCP4017 OK @ 0x2F
    Joined YourSSID — IP=192.168.x.x
    URL: http://voltbench.local/
