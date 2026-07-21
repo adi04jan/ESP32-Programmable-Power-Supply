@@ -443,7 +443,7 @@ void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
 }
 
 // =============================================================================
-//   Voltbench: NVS, gzip serving, WebSocket, captive portal, guards, MQTT
+//   Voltbench: NVS, gzip serving, WebSocket, captive portal, MQTT
 //   Include AFTER all shared symbols are defined above.
 // =============================================================================
 #include "firmware-additions.h"
@@ -558,7 +558,7 @@ void setup() {
     vb_save();
   }
 
-  // Voltbench: load NVS again (now has migrated creds), try WiFi, register all /api/* routes
+  // Voltbench: try WiFi, register all /api/* routes
   vb_setup();
 
   server.begin();
@@ -575,7 +575,7 @@ void setup() {
 }
 
 void loop() {
-  vb_loop();                      // DNS captive, WebSocket push, MQTT, OCP/OTP guards
+  vb_loop();                      // DNS captive, WebSocket push, MQTT
   remote_debug_pump();            // telnet + browser log stream
 
   // Bench console over USB (same commands as telnet): v<volts> o1 o0 m c ?

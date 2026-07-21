@@ -37,8 +37,6 @@ extern volatile uint32_t g_setpoint_mV;
 extern void setOutput(uint8_t output, bool state);
 extern void setVoltage(float voltage);
 extern bool apply_command(const String &action, uint8_t ch, float val);
-extern int  read_5V_volt();
-extern int  read_3V3_volt();
 extern volatile uint32_t g_5v_mV, g_3v3_mV;   // rails sampled by the control task
 
 // OTA state (defined in main sketch, near perform_ota)
@@ -349,6 +347,7 @@ void vb_on_ws_event(AsyncWebSocket *srv, AsyncWebSocketClient *c,
   if (!action) return;
   String act = action;
   int    output = doc["output"] | 0;
+  if (output < 0 || output > 3) output = 0;   // reject out-of-range before narrowing to uint8_t
   float  value  = doc["value"]  | 0.0f;
 
   float tval = value;
