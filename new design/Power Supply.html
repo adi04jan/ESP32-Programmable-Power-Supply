@@ -550,7 +550,8 @@ canvas#graph{display:block;width:100%;height:380px}
           <div class="legend-item" style="color:#5ec6f0"><span class="swatch" style="background:currentColor"></span>5V&nbsp;measured</div>
           <div class="legend-item" style="color:#a78bfa"><span class="swatch" style="background:currentColor"></span>3V3&nbsp;measured</div>
           <div class="legend-item" style="color:#f0b04a"><span class="swatch dash" style="color:currentColor"></span>VAR&nbsp;set-point</div>
-          <div class="legend-item" style="color:#8895a8"><span class="swatch" style="background:currentColor;opacity:.35"></span>Output ON</div>
+          <div class="legend-item" style="color:#8895a8"><span class="swatch" style="background:currentColor;opacity:.35"></span>ON band (channel colour)</div>
+          <div class="legend-item" style="color:#8895a8"><span class="swatch" style="background:currentColor"></span>solid&nbsp;=&nbsp;on&nbsp;·&nbsp;<span class="swatch dash" style="color:currentColor"></span>dashed&nbsp;=&nbsp;off</div>
         </div>
       </div>
 
@@ -1154,9 +1155,12 @@ function renderChannels(){
       slider.addEventListener("input", ()=>{ target.value = (+slider.value).toFixed(2); showLanding(); });
       target.addEventListener("input", ()=>{ slider.value = +target.value; showLanding(); });
       const submit = async ()=>{
-        const v = Math.min(c.max, Math.max(c.min, +target.value || c.min));
+        let v = Math.min(c.max, Math.max(c.min, +target.value || c.min));
+        const p = predictLanding(v);          // snap to the achievable step ladder
+        if (p !== null) v = p;
         target.value = v.toFixed(2);
         slider.value = v;
+        if (land) land.style.display = "none";  // now exactly on a rung
         await api("/api/control", {method:"POST", body:new URLSearchParams({action:"set_voltage", output:c.n, value:v})});
         pushEvt("set", c.n, v, `set ${v.toFixed(2)} V`);
         pull();
@@ -1456,15 +1460,18 @@ function drawGraph(){
     ctx.fill();
   }
 
-  // Event markers
+  // Event markers — channel-coloured (VAR green, 5V cyan, 3V3 violet):
+  // ON = solid line, OFF = dashed line, set-point change = amber dotted.
   ctx.font = "10px JetBrains Mono, monospace";
   for (const e of evts){
     if (e.t < tStart || e.t > tEnd) continue;
     if (chanFilter!=="all" && +chanFilter !== e.ch) continue;
     const px = x(e.t);
-    ctx.strokeStyle = e.type==="off" ? "#ef5a5a" : e.type==="on" ? "#3dd68c" : "#a78bfa";
-    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = e.type==="set" ? "#f0b04a" : chanColor(e.ch);
+    ctx.setLineDash(e.type==="off" ? [4,4] : e.type==="set" ? [2,3] : []);
+    ctx.globalAlpha = 0.55;
     ctx.beginPath(); ctx.moveTo(px, padT); ctx.lineTo(px, padT+plotH); ctx.stroke();
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
     ctx.fillStyle = ctx.strokeStyle;
     ctx.fillRect(px-2, padT-3, 4, 4);
