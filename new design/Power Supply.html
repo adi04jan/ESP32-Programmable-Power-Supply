@@ -954,7 +954,7 @@ async function api(path, opts={}){
 }
 
 /* ---------- WebSocket (optional, falls back to polling) ----------- */
-let ws = null, wsAlive = false, wsTries = 0;
+let ws = null, wsAlive = false, wsTries = 0, wsLastFrame = 0;
 function connectWS(){
   if (!("WebSocket" in window)) return;
   if (!location.host || location.protocol === "file:") return;  // standalone demo
@@ -965,8 +965,9 @@ function connectWS(){
     ws = new WebSocket(proto + "//" + location.host + "/ws");
   } catch(e){ return; }
   const timeout = setTimeout(()=>{ try{ ws.close(); }catch(_){}}, 1500);
-  ws.addEventListener("open", ()=>{ clearTimeout(timeout); wsAlive = true; wsTries = 0; if (pollTimer){clearInterval(pollTimer); pollTimer=null;} });
+  ws.addEventListener("open", ()=>{ clearTimeout(timeout); wsAlive = true; wsTries = 0; wsLastFrame = Date.now(); if (pollTimer){clearInterval(pollTimer); pollTimer=null;} });
   ws.addEventListener("message", ev => {
+    wsLastFrame = Date.now();
     try {
       const s = JSON.parse(ev.data);
       if (s.ts) onStatus(s);
@@ -975,6 +976,16 @@ function connectWS(){
   ws.addEventListener("close", ()=>{ wsAlive = false; ws = null; setTimeout(connectWS, 5000); if (!pollTimer) startPolling(); });
   ws.addEventListener("error", ()=>{ try{ ws.close(); }catch(_){}});
 }
+// Watchdog: a half-dead socket (open but silent) must never freeze the display.
+// >3.5 s without a frame -> close it; the close handler restores polling and
+// schedules a reconnect. Server pushes every 250 ms, so 3.5 s = ~14 missed frames.
+setInterval(()=>{
+  if (wsAlive && wsLastFrame && Date.now() - wsLastFrame > 3500) {
+    try { ws.close(); } catch(_){}
+    wsAlive = false;
+    if (!pollTimer) startPolling();
+  }
+}, 2000);
 
 /* ---------- Tiny utilities ----------------------------------------- */
 const $  = (s,r=document)=>r.querySelector(s);

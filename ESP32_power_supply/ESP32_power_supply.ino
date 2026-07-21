@@ -99,17 +99,25 @@ static char              g_log[LOGN];
 static volatile uint32_t g_logw   = 0;            // monotonic write counter
 static portMUX_TYPE      g_logmux = portMUX_INITIALIZER_UNLOCKED;
 
+// NOTE: `if (Serial)` is NOT enough — after an esptool flash the CDC session is
+// left stale-"connected" (port enumerated, nobody reading). Once the TX ring
+// fills, HWCDC::write's retry counter underflows with txTimeout=0 (core 3.2.1
+// HWCDC.cpp:448-479: `tries--` from 0) and blocks loop() ~forever. Writing no
+// more than availableForWrite() keeps every write on the non-blocking fast path.
 class DbgPrint : public Print {
  public:
   size_t write(uint8_t c) override {
-    if (Serial) Serial.write(c);                  // guarded: never blocks with no USB host
+    if (Serial && Serial.availableForWrite() > 0) Serial.write(c);
     portENTER_CRITICAL(&g_logmux);
     g_log[g_logw % LOGN] = (char)c; g_logw++;
     portEXIT_CRITICAL(&g_logmux);
     return 1;
   }
   size_t write(const uint8_t *b, size_t n) override {
-    if (Serial) Serial.write(b, n);
+    if (Serial) {
+      size_t a = (size_t)Serial.availableForWrite();
+      if (a > 0) Serial.write(b, n < a ? n : a);   // truncate to free space, never block
+    }
     portENTER_CRITICAL(&g_logmux);
     for (size_t i = 0; i < n; i++) { g_log[g_logw % LOGN] = (char)b[i]; g_logw++; }
     portEXIT_CRITICAL(&g_logmux);
@@ -201,13 +209,6 @@ bool apply_command(const String &action, uint8_t ch, float val) {
   return false;
 }
 
-// Send any new ring-buffer bytes (since *cursor) to a stream; skip ahead if the
-// consumer fell more than one ring behind.
-static void flushLog(Print &out, uint32_t &cursor) {
-  uint32_t w = g_logw;
-  if (w - cursor > (uint32_t)LOGN) cursor = w - LOGN;
-  while (cursor < w) { out.write((uint8_t)g_log[cursor % LOGN]); cursor++; }
-}
 
 // Execute one bench-console command, replying on `out`. Shared by USB + telnet.
 void console_exec(const String &lineIn, Print &out) {
@@ -478,7 +479,14 @@ void remote_debug_pump() {
     telnetCli.println(telnetAuthed ? "cmds: v<volts> o1 o0 m c ?" : "password:");
   }
   if (telnetCli && telnetCli.connected()) {
-    flushLog(telnetCli, g_telnetRead);
+    // Budget the flush to the socket's free send space — a stalled peer must
+    // never block loop() (same failure class as the WS queue backlog).
+    int budget = telnetCli.availableForWrite();
+    uint32_t w = g_logw;
+    if (w - g_telnetRead > (uint32_t)LOGN) g_telnetRead = w - LOGN;
+    while (g_telnetRead < w && budget-- > 0) {
+      telnetCli.write((uint8_t)g_log[g_telnetRead % LOGN]); g_telnetRead++;
+    }
     static String tin;
     while (telnetCli.available()) {
       char ch = (char)telnetCli.read();
@@ -497,7 +505,9 @@ void remote_debug_pump() {
   if (logws.count()) {
     uint32_t w = g_logw;
     if (w - g_wsLogRead > (uint32_t)LOGN) g_wsLogRead = w - LOGN;
-    if (w > g_wsLogRead) {
+    // Same rule as vb_push_status: never queue onto a backed-up client — the
+    // ring cursor just lags (and skips ahead, above) until the client drains.
+    if (w > g_wsLogRead && logws.availableForWriteAll()) {
       String s; s.reserve(w - g_wsLogRead);
       while (g_wsLogRead < w) { s += g_log[g_wsLogRead % LOGN]; g_wsLogRead++; }
       logws.textAll(s);

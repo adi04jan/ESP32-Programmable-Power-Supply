@@ -322,6 +322,10 @@ uint32_t vb_last_push = 0;
 void vb_push_status() {
   if (vb_ws.count() == 0) return;
   if (millis() - vb_last_push < (vb.exp_fast ? 250 : 1000)) return;
+  // A client that stops ACKing must not back up the send queues — queueing onto
+  // it starves loop()'s whole TX path (observed: frames delivered minutes late,
+  // telnet dead). Library docs mandate this check before textAll.
+  if (!vb_ws.availableForWriteAll()) return;   // skip this round; drop, don't queue
   vb_last_push = millis();
   JsonDocument d;
   vb_fill_status(d);
