@@ -124,14 +124,8 @@ volatile uint32_t g_target_mV    = 2500;
 volatile uint32_t g_setpoint_mV  = 2500;
 volatile uint32_t g_measured_mV  = 0;
 
-// PID state — written by voltageControlTask, read by firmware-additions.h
-volatile float    g_pid_kp          = 0.50f;
-volatile float    g_pid_ki          = 0.10f;
-volatile float    g_pid_kd          = 0.02f;
-volatile uint8_t  g_vctrl_state     = 0;    // 0=idle 1=settling 2=pid 3=converged 4=tuning
-volatile bool     g_autotune_req    = false;
-volatile uint8_t  g_ctrl_mode       = 0;    // 0=quick 1=continuous 2=timed
-volatile uint32_t g_ctrl_timeout_ms = 5000;
+// Voltage-control state — written by voltageControlTask, read by firmware-additions.h
+volatile uint8_t  g_vctrl_state     = 0;    // 0=idle 1=settling 2=verifying 3=frozen 4=busy
 
 // =============================================================================
 //   ADC averaging (rolling buffer)
@@ -206,7 +200,7 @@ void console_exec(const String &lineIn, Print &out) {
 
 // =============================================================================
 //   voltageControlTask — deterministic best-step voltage setter
-//   g_vctrl_state: 0=idle 1=settling 2=acquiring 3=frozen 4=busy(sweep/tune)
+//   g_vctrl_state: 0=idle 1=settling 2=verifying 3=frozen 4=busy
 //   Runs on core 0, priority 2. Web handlers return immediately.
 // =============================================================================
 // Heavily filtered: mean of 50 reads over ~200 ms (10 mains cycles @50 Hz) to
@@ -278,9 +272,6 @@ void run_cal_sweep() {
 // Closest calibrated step to target that doesn't exceed the +300 mV ceiling.
 static int cal_best_step(uint32_t target) { return cm_best_step(g_cal_mv, target); }
 
-// pid_autotune() is defined after #include "firmware-additions.h"
-bool pid_autotune(uint32_t target);
-
 void voltageControlTask(void* pvParameters) {
   uint32_t lastTarget    = g_target_mV;
   uint32_t settle_t      = 0;
@@ -290,16 +281,6 @@ void voltageControlTask(void* pvParameters) {
 
   for (;;) {
     if (g_cal_sweep_req) { g_cal_sweep_req = false; run_cal_sweep(); lastTarget = 0; state = 0; continue; }
-
-    if (g_autotune_req) {
-      g_autotune_req = false;
-      g_vctrl_state  = 4;
-      pid_autotune(g_target_mV);
-      pre_discharge = false;
-      lastTarget = 0;
-      state = 0; g_vctrl_state = 0;
-      continue;
-    }
 
     uint32_t target = g_target_mV;
 
@@ -443,85 +424,6 @@ void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
 //   Include AFTER all shared symbols are defined above.
 // =============================================================================
 #include "firmware-additions.h"
-
-// =============================================================================
-//   Relay-feedback auto-tune (Åström-Hägglund)
-//   Called from voltageControlTask (core 0) when g_autotune_req is set.
-//   Computes Ziegler-Nichols Kp/Ki/Kd and persists them to NVS.
-// =============================================================================
-bool pid_autotune(uint32_t target) {
-  if (target <= (uint32_t)DC_V_REF) return false;
-
-  long r_cl = (long)((DC_R2_REF * DC_V_REF) / (target - DC_V_REF)) - MCPWIPEROHMS;
-  if (r_cl < 0) r_cl = 0;
-  float rc = (float)r_cl;
-
-  // Relay amplitude: aim for ~150 mV voltage swing, clamped 2–8 MCP4017 steps
-  const float STEP = 79.0f;
-  float relay_r = constrain(150.0f * rc * rc / ((float)DC_V_REF * (float)DC_R2_REF),
-                            STEP * 2, STEP * 8);
-  // Formula set + settle
-  dpSetR((uint32_t)rc);
-  vTaskDelay(pdMS_TO_TICKS(800));
-
-  const int MAX_CROSS = 8;
-  uint32_t  cross_t[MAX_CROSS];
-  int       n_cross = 0;
-  bool      relay_up = true;
-  uint32_t  meas_max = 0, meas_min = 0xFFFFFFFFu;
-  bool      tracking = false;
-  uint32_t  t_start  = millis();
-
-  dpSetR((uint32_t)constrain(rc - relay_r, 0.0f, (float)DC_R2_REF));
-
-  while (n_cross < MAX_CROSS && millis() - t_start < 30000) {
-    vTaskDelay(pdMS_TO_TICKS(10));
-    uint32_t sum = 0;
-    for (int s = 0; s < 4; s++) {
-      sum += analogReadMilliVolts(VOLTAGE_READ_PIN_VV);
-      vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    uint32_t meas = (sum / 4) * 48;
-    g_measured_mV = meas;
-    if (tracking) {
-      if (meas > meas_max) meas_max = meas;
-      if (meas < meas_min) meas_min = meas;
-    }
-    if (relay_up && meas >= target) {
-      relay_up = false;
-      dpSetR((uint32_t)constrain(rc + relay_r, 0.0f, (float)DC_R2_REF));
-      cross_t[n_cross++] = millis(); tracking = true;
-    } else if (!relay_up && meas < target) {
-      relay_up = true;
-      dpSetR((uint32_t)constrain(rc - relay_r, 0.0f, (float)DC_R2_REF));
-      cross_t[n_cross++] = millis();
-    }
-  }
-
-  dpSetR((uint32_t)rc);
-  if (n_cross < 4 || meas_max <= meas_min) return false;
-
-  float Tu_sum = 0; int Tu_n = 0;
-  for (int i = 2; i < n_cross; i += 2) { Tu_sum += cross_t[i] - cross_t[i-2]; Tu_n++; }
-  if (Tu_n == 0) return false;
-  float Tu = Tu_sum / Tu_n / 1000.0f;
-  float Au = (meas_max - meas_min) / 2.0f;
-  if (Tu < 0.2f || Au < 30.0f) return false;
-
-  float d_v = relay_r * (float)DC_V_REF * (float)DC_R2_REF / (rc * rc);
-  float Ku  = 4.0f * d_v / (3.14159265f * Au);
-
-  g_pid_kp = 0.6f * Ku;
-  g_pid_ki = 1.2f * Ku / Tu;
-  g_pid_kd = 0.075f * Ku * Tu;
-  vb.pid_kp = g_pid_kp; vb.pid_ki = g_pid_ki; vb.pid_kd = g_pid_kd;
-  vb.pid_tuned = true;
-  vb_save();
-  // Print gains as integers (×1000) to avoid pulling in float-printf
-  Serial.printf("[AutoTune] Kp=%d Ki=%d Kd=%d (x1000)\n",
-    (int)(g_pid_kp*1000), (int)(g_pid_ki*1000), (int)(g_pid_kd*1000));
-  return true;
-}
 
 static bool ota_force_flag = false;
 static void ota_task_fn(void *pv) {
