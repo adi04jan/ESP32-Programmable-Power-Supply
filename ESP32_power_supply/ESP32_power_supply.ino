@@ -22,7 +22,7 @@
 #include "credential.h"     // ssids[], passwords[], base_url (initial seed only)
 #include "control_math.h"   // pure control math, host-tested (tools/host_test/)
 
-#define CURRENT_FIRMWARE_VERSION "3.0.0"
+#define CURRENT_FIRMWARE_VERSION "3.0.1"
 
 // Pull-OTA source: this repo's GitHub "latest release" assets. The device fetches
 // <base>version.txt, and if it differs from CURRENT_FIRMWARE_VERSION, downloads
