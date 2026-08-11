@@ -133,6 +133,21 @@ These cost hours to rediscover. Do not "clean up" the workarounds.
   published, disable `ota_auto`. The real fix is a semver `>` comparison.
 - **ArduinoOTA does not work here.** `ArduinoOTA.begin()` deadlocks alongside AsyncTCP even with mDNS
   disabled. It was tried and removed. Use web-upload or pull-OTA.
+- **Reading USB serial on the C3 has two independent traps; expect silence until both are handled.**
+  1. **HWCDC discards output until the host writes first.** `HWCDC::isCDC_Connected()` only becomes
+     true when `connected = true` is set inside the *RX* interrupt (`HWCDC.cpp` ~line 129), and when it
+     is false `write()` throws the data away (~line 425). Since `DbgPrint` guards on `if (Serial)`, a
+     terminal that only listens sees **nothing at all**. Send any byte (even a bare newline) to wake it.
+  2. **Opening the port can knock the chip into ROM download mode.** DTR drives the boot pin on the
+     USB-Serial-JTAG: DTR low through a reset selects download, and the ROM then prints
+     `boot:0x5 (DOWNLOAD)` / `waiting for download` and runs nothing. Open with `DtrEnable = true`
+     (verified reset-safe) rather than the .NET default of false.
+
+  To tell "app running" from "parked in the bootloader" without guessing, ask esptool to talk to the
+  chip **without** resetting it: `esptool --before no_reset --after no_reset chip_id`. If that syncs
+  ("Stub flasher running"), the app is not running. If it fails to sync, the app is running and any
+  silence is a serial-plumbing problem. Note the ROM bootloader presents the *same* composite
+  CDC + JTAG USB device as a running app, so enumeration proves nothing on its own.
 - **Pull-OTA uses `setInsecure()` deliberately.** The core's embedded CA bundle symbol isn't in the
   indexed format `esp_crt_bundle_set()` needs, so verification fails with "No CA Chain is set". This is
   an accepted trade-off, not an oversight — don't "fix" it without a build-time bundle or firmware signing.
