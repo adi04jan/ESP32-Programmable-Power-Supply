@@ -14,18 +14,30 @@ Two hardware generations coexist in this repo:
 |---|---|---|
 | Branch | `main`, `release_v2` | `v2-hardware` |
 | Topology | LM2596 + MCP4017 digipot, 3 outputs, CV only | MP1584 + MCP4728 + LM358, 2 channels, hardware CC+CV |
-| Firmware | `ESP32_power_supply/` (v3.0.1) | not written yet |
+| Firmware | `ESP32_power_supply/` (v3.0.1) | Phase 0 done (module split); Phase 1+ not started |
 | Reference | `README.md` | `Hardware/HARDWARE-DESIGN-V2.md` + `docs/superpowers/specs/2026-08-11-v2.1-firmware-and-software-design.md` |
 
-`release_v2` is the live firmware line. `v2-hardware` currently holds only the redesign document —
-do not assume code there matches it.
+`release_v2` is the live firmware line. `v2-hardware` carries the v2.1 design docs plus the Phase 0
+firmware refactor; its control path is still v1 behaviour, so do not assume code there matches the
+v2.1 design.
 
 ## Commands
 
-**Build/flash** — Arduino IDE 2.x only (no arduino-cli config, no PlatformIO). Board `ESP32C3 Dev
-Module`, 4 MB flash, **Partition Scheme: Custom → `ESP32_power_supply/partitions.csv`** (the default
-scheme is too small — the sketch is ~1.3 MB), and **USB CDC On Boot: Enabled** (required for the
-serial console; `Serial.setTxTimeoutMs(0)` is set so CDC never blocks the loop).
+**Build** — arduino-cli is installed and works; use it to verify changes without opening the IDE:
+```sh
+arduino-cli compile -b "esp32:esp32:esp32c3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=min_spiffs" \
+  --build-path /tmp/vb_build ESP32_power_supply
+# v1 baseline for comparison: flash 1,337,334 B (68%) · static RAM 45,680 B (13%)
+```
+A refactor that moves those numbers by more than a few hundred bytes changed something real. In
+particular, a sudden **+60 KB** means a translation unit lost `#pragma GCC optimize("Os")`.
+
+**Flash** — Arduino IDE 2.x (no PlatformIO config exists). Board `ESP32C3 Dev Module`, 4 MB flash,
+**Partition Scheme: Custom → `ESP32_power_supply/partitions.csv`** (the default is too small — the
+sketch is ~1.3 MB), and **USB CDC On Boot: Enabled** (required for the serial console;
+`Serial.setTxTimeoutMs(0)` is set so CDC never blocks the loop). Note arduino-cli does *not* pick up
+the sketch's `partitions.csv`, so the command above uses `min_spiffs` (1.875 MB app) purely as a
+size-check proxy; it is close enough to the real 1.75 MB slot to catch overflow.
 
 **Host test** — the only runnable test. Covers `control_math.h`:
 ```sh
