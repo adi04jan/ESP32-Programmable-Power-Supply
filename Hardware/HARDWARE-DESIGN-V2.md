@@ -1,720 +1,550 @@
-# Voltbench v2 — Hardware Design
+# Voltbench v2.1 — Hardware Design
 
-> Two-channel programmable bench power supply.  
-> Input: 24 V DC SMPS · Output: 2.8 V – 20 V · 3 A per channel  
-> Control: ESP32-C3 · I²C DAC (MCP4728) · Discrete PMOS LDO · INA219 sensing
+> Two-channel programmable bench power supply with **true hardware CC + CV** per channel.
+> Input: 24 V DC SMPS · Output: 1.0 – 20 V · 2 A (see derating) · per channel
+> Control: ESP32-C3 Super Mini · MCP4728 quad DAC · MP1584 modules (modded) · LM358 CC loop · INA219 sensing
+> Local UI: SSD1306 OLED + 3 buttons · Remote: existing Voltbench web/WS/OTA firmware stack
 
 ---
 
 ## Table of Contents
 
-1. [Why v2?](#why-v2)
+1. [Why v2.1?](#why-v21)
 2. [System Overview](#system-overview)
-3. [Stage 1 — Coarse Voltage (MP1584 + MCP4728)](#stage-1--coarse-voltage-mp1584--mcp4728)
-4. [Stage 2 — Precision LDO (FQP27P06 + LM358)](#stage-2--precision-ldo-fqp27p06--lm358)
-5. [Stage 3 — Measurement (INA219)](#stage-3--measurement-ina219)
-6. [Complete Single-Channel Schematic](#complete-single-channel-schematic)
-7. [Two-Channel Full System](#two-channel-full-system)
-8. [I²C Address Map](#i2c-address-map)
-9. [Power Budget](#power-budget)
-10. [Thermal Design](#thermal-design)
-11. [Bill of Materials](#bill-of-materials)
-12. [PCB Design Notes (0.25 mm CNC)](#pcb-design-notes-025-mm-cnc)
-13. [Firmware Interface](#firmware-interface)
-14. [System Specifications](#system-specifications)
+3. [CV Loop — DAC Feedback Injection](#cv-loop--dac-feedback-injection)
+4. [CC Loop — LM358 Shunt Amp + Diode-OR](#cc-loop--lm358-shunt-amp--diode-or)
+5. [MP1584 Module Mod Procedure](#mp1584-module-mod-procedure)
+6. [Sensing — INA219 + Remote-Sense Tap](#sensing--ina219--remote-sense-tap)
+7. [Output Enable + Power-Up Safety Chain](#output-enable--power-up-safety-chain)
+8. [Self-Calibration Load](#self-calibration-load)
+9. [Local UI — OLED + Buttons](#local-ui--oled--buttons)
+10. [Pin Map + I²C Address Map](#pin-map--i2c-address-map)
+11. [Power Budget + Thermal](#power-budget--thermal)
+12. [Bill of Materials](#bill-of-materials)
+13. [Carrier PCB Notes (0.25 mm CNC)](#carrier-pcb-notes-025-mm-cnc)
+14. [Bring-Up & Verification Checklist](#bring-up--verification-checklist)
+15. [Firmware Architecture Outline](#firmware-architecture-outline)
+16. [System Specifications](#system-specifications)
+17. [Key Design Decisions Log](#key-design-decisions-log)
 
 ---
 
-## Why v2?
+## Why v2.1?
 
-### Problems with v1 (LM2596 + MCP4017)
+### v1 problems (LM2596 + MCP4017 digipot)
 
-| Problem | Root Cause | Impact |
-|---------|-----------|--------|
-| ±400–800 mV voltage error | MCP4017 has 128 steps × 78.7 Ω/step | Cannot hit target precisely |
-| PID loop needed | Step size larger than tolerance band | Slow settling, overshoot risk |
-| No current measurement | No sense circuit | Cannot display watts or enforce OCP |
-| Noisy ADC readings | ESP32-C3 internal ADC non-linearity | Inaccurate voltage display |
-| 75% efficiency | LM2596 150 kHz non-synchronous switcher | Heat, large inductor/caps |
+| Problem | Root cause |
+|---------|-----------|
+| ±100 mV best-case accuracy | 128-step digipot fought by a software loop |
+| No current limit at all | No sense circuit, no CC loop |
+| Slow settling | Software deadbeat controller over I²C |
+| Noisy readings | ESP32-C3 internal ADC |
 
-### v2 Solution
+### Why this supersedes the earlier v2 draft (MP1584 + PMOS-LDO)
+
+The previous revision of this document added a PMOS linear post-regulator for
+2–5 mV ripple, but had **no current control**. Adding hardware CC to that
+topology fails twice:
+
+1. **DAC budget** — coarse + fine + CC per channel = 6 setpoints; the MCP4728 has 4.
+2. **Thermal hazard** — in CC mode with a shorted output, the PMOS drops the
+   full pre-regulator voltage: ~20 V × 2 A ≈ **40 W** in one TO-220 unless
+   firmware actively droops the buck (slow, fragile).
+
+v2.1 instead uses the classic XL4015-CC/CV-board topology — both loops act
+directly on the buck's FB pin, with the trimpots replaced by DAC channels:
 
 ```
-v1:  LM2596 (variable R2 via MCP4017)  →  ±400 mV error, slow PID
-v2:  MP1584 (DAC FB injection)         →  coarse set, instant, ~3 mV resolution
-     + PMOS LDO (op-amp regulated)     →  fine regulation, 2–5 mV ripple
-     + INA219                          →  accurate V + I measurement
+v1:    LM2596 + digipot + software loop  →  ±100 mV, no CC
+v2.0:  MP1584 + PMOS LDO (draft only)    →  CV only, CC infeasible
+v2.1:  MP1584 FB injection (CV)          →  ~4.8 mV/LSB, analog-regulated
+       + LM358 shunt amp diode-OR (CC)   →  true hardware current limit
+       + INA219                          →  accurate V + I readback
 ```
+
+The MCU only writes setpoints; the analog loops do all regulation.
+Short-circuit safe by construction — the buck just reduces duty.
+Trade-off accepted: output ripple ~20–30 mV (no linear post-stage).
 
 ---
 
 ## System Overview
 
 ```
-                       24V DC SMPS
+                          24V DC SMPS (4A)
+                                │
+        ┌───────────────┬───────┴────────┬──────────────────┐
+        │               │                │                  │
+   [CHANNEL 1]     [CHANNEL 2]     [5V buck module]    [LM358 ×2 Vcc]
+   MP1584 mod      MP1584 mod           │
+   LM358 CC        LM358 CC        ESP32-C3 Super Mini ── 3.3V → INA219×2,
+   INA219 0x40     INA219 0x41          │                  MCP4728, OLED
+   cal load        cal load        ┌────┴─────┐
+        │               │          │  I²C bus │ SDA/SCL
+        └───────────────┴──────────┴──────────┘
+                                   │
+                 MCP4728 0x60 · INA219 0x40/0x41 · SSD1306 0x3C
+```
+
+### Per-channel signal flow
+
+```
+24V ──► MP1584 module ──►──[0.1Ω shunt]──►── OUT+ terminal
+         (FB net removed)  │           │
+              FB ◄─────┐   └─ INA219 ──┘  (IN− on terminal side;
+               ▲       │      bus reading = terminal voltage)
+               │       │
+   R1 100k ────┤◄──────┴── Vout sense tapped AFTER shunt (remote sense)
+   R2 6.8k ────┤── GND
+   R3 10.5k ───┘── MCP4728 CV channel (0–2.048V)
+
+   shunt ×10 diff amp ──► integrator vs CC DAC ──[BAT54]──[10k]──► FB
+   (LM358 half A)         (LM358 half B)     pulls FB up ⇒ Vout drops
+```
+
+Whichever loop demands the **lower** output wins: in CV mode the CC amp
+saturates low and its diode blocks; when load current hits the limit, the
+integrator rises, the diode conducts, FB is pulled up and the buck folds
+back voltage until current equals the setpoint.
+
+### MCP4728 channel assignment
+
+| Channel | Function | Scale |
+|---------|----------|-------|
+| A | CH1 CV setpoint | code 0 = 20.18 V … code 4095 = 0.68 V (inverted!) |
+| B | CH1 CC setpoint | 1 V = 1 A → code ≈ 2000 × amps |
+| C | CH2 CV setpoint | same as A |
+| D | CH2 CC setpoint | same as B |
+
+Internal reference 2.048 V, gain ×1 — setpoints are independent of the 3.3 V rail.
+
+---
+
+## CV Loop — DAC Feedback Injection
+
+The MP1584 regulates FB to **0.8 V**. With the module's own divider removed,
+an external three-resistor network sets the output, and the DAC shifts it
+linearly by injecting current into the FB node:
+
+```
+Vout_sense ──[R1 100k 1%]──┬── FB (MP1584)
                             │
-              ┌─────────────┼─────────────┐
-              │             │             │
-              ▼             ▼             ▼
-          [CHANNEL 1]   [CHANNEL 2]   [ESP32-C3]
+              GND ──[R2 6.8k 1%]
+                            │
+  MCP4728 CV ──[R3 10.5k 1%]┘        (all E96 values)
+```
+
+### Transfer function
+
+```
+Vout = 0.8 · (1 + R1/R2 + R1/R3) − Vdac · (R1/R3)
+
+R1/R2 = 14.71   R1/R3 = 9.52
+
+Vout = 20.18 V − 9.52 · Vdac
+     = 20.18 V − code · 4.763 mV        (Vdac = 2.048 · code / 4095)
+
+code = (20.18 − Vtarget) / 0.004763
+```
+
+**Resolution ≈ 4.8 mV/LSB.** DAC loading is trivial (≤120 µA, buffered
+output); MP1584 FB bias current (±100 nA through 100k) contributes ≤±10 mV.
+
+### Code table (nominal — firmware calibrates, see below)
+
+| Target Vout | DAC code |
+|-------------|----------|
+| 20.0 V | 38 |
+| 15.0 V | 1088 |
+| 12.0 V | 1717 |
+| 9.0 V  | 2347 |
+| 5.0 V  | 3187 |
+| 3.3 V  | 3544 |
+| 1.0 V  | 4027 |
+| 0.8 V  | 4069 (clamp: codes 4070–4095 are below-spec) |
+
+### Calibration is mandatory
+
+1 % resistors stack to roughly **±2 % at the 20.18 V endpoint (±0.4 V)**.
+Firmware performs a two-point calibration per channel against the INA219
+(set two codes, read actual voltage, solve gain + offset). This replaces
+v1's 128-entry calibration map entirely — the DAC is linear.
+
+### ⚠ Inverted relation
+
+**DAC code 0 = maximum voltage.** An unprogrammed/reset DAC would slam the
+output to 20 V. Mitigated by the three-layer safety chain in
+[Output Enable + Power-Up Safety Chain](#output-enable--power-up-safety-chain).
+
+---
+
+## CC Loop — LM358 Shunt Amp + Diode-OR
+
+One LM358 (dual op-amp, Vcc = **24 V rail**, GND = system ground) per channel.
+
+### Half A — shunt difference amplifier (gain 10)
+
+```
+ shunt upstream (buck side, V2) ──[10k]──┬──(+in)
                                           │
-                                     I²C Bus (SDA/SCL)
-                                     ┌────┴──────┐
-                                  MCP4728      INA219×2
-                                  (0x60)    (0x40, 0x41)
+                              [100k]──── GND
+ shunt downstream (terminal, V1) ─[10k]──┬──(−in)
+                                          │
+                              [100k]──── (output)
+
+ output = 10 · (V2 − V1) = 10 · I · 0.1Ω  →  1 V per amp, ground-referenced
 ```
 
-### Per-Channel Signal Flow
+- **All four resistors 0.1 %** (₹5 parts). Worst-case CMRR of a 4-resistor
+  diff amp at 0.1 % is ≈ 69 dB → at 20 V common mode that is ±73 mA of
+  error, plus ~7 mA from LM358 Vos. Acceptable for a hardware limiter —
+  the INA219 still reports true current, and firmware software-trims the
+  CC DAC against it.
+- **Filtering:** one 100 nF **differential** capacitor directly between the
+  op-amp's +in and −in nodes (inside the matched arms). Do **not** add
+  series filter resistors — unmatched series R doubles the CMRR error.
+- Common-mode check: op-amp input pins sit at ~0.91 × 20.4 V ≈ 18.5 V;
+  LM358 input range extends to Vcc − 1.5 V = 22.5 V. 4 V margin. ✓
+
+### Half B — error integrator + diode-OR
 
 ```
-24V ──► [MP1584 Buck] ──► [FQP27P06 PMOS] ──► OUTPUT TERMINAL
-              ▲                   ▲
-              │ FB injection       │ Gate drive
-         MCP4728 Ch A          LM358 op-amp ◄── MCP4728 Ch B
-         (coarse set)          (fine regulate)        (reference)
-                                      ▲
-                               Vout feedback
-                               divider (10k/51k)
-                                      │
-                               ──[0.1Ω shunt]──
-                                      │
-                                  INA219
-                                (V + I sense)
-```
-
----
-
-## Stage 1 — Coarse Voltage (MP1584 + MCP4728)
-
-### How It Works
-
-The MP1584 is a synchronous buck converter with an adjustable output set by its FB (feedback) pin. Normally R1 and R2 form a divider to set output voltage. We **inject current from the MCP4728 DAC through R3** into the FB node, which shifts the output voltage continuously and linearly.
-
-The FB pin is always regulated to **Vref = 0.8 V** by the MP1584's internal error amplifier. Injecting current via R3 forces the converter to change Vout to maintain that 0.8 V at FB.
-
-### Feedback Network Schematic
-
-```
-                          MP1584
-                         ┌──────┐
-              ┌──────────┤ FB   │
-              │          └──────┘
-              │
-Vout_mp1584 ──┤──[R1 = 100 kΩ]──┐
-              │                   │
-              ├──[R2 = 6.8 kΩ]── GND
-              │
-              └──[R3 = 24.3 kΩ]──── MCP4728 Channel A (0–3.3 V)
-```
-
-### Transfer Function
-
-```
-Vout = 0.8 × (1 + R1/R2 + R1/R3)  −  Vdac × (R1/R3)
-
-With R1=100k, R2=6.8k, R3=24.3k:
-  Vout = 16.0  −  4.09 × Vdac
-```
-
-### DAC Code to Output Voltage
-
-```
-Vdac = (16.0 − Vout_target) / 4.09
-DAC_code = round(Vdac × 4096 / 3.3)
-```
-
-| Target Vout + 0.5V | Vdac | DAC Code |
-|--------------------|------|----------|
-| 20.5 V | 0.00 V | 0 |
-| 15.5 V | 0.12 V | 1218 |
-| 12.5 V | 0.49 V | 1211 (coarse MP1584 target) |
-| 9.5 V | 1.59 V | 1973 |
-| 5.5 V | 2.56 V | 3176 |
-| 3.3 V | 3.10 V | 3846 |
-
-> MP1584 is set to **Vtarget + 0.5 V** — the LDO stage drops the final 0.5 V precisely.
-
-### MP1584 Support Components
-
-```
-               24V
-                │
-           [10µF ceramic]  ← Input decoupling
-                │
-         ┌──────┴──────┐
-         │   MP1584    │
-    EN ──┤EN       OUT ├──┬──[L1: 4.7µH]──┬── To PMOS source
-         │             │  │               │
-         │         SW  ├──┘            [C1: 22µF] ← Output cap
-         │             │               ceramic
-         └──────┬──────┘               │
-               GND                    GND
-                         [D1: SS34 Schottky] ← Freewheeling diode
-                         (SW to GND, for transient protection)
-```
-
-| Component | Value | Notes |
-|-----------|-------|-------|
-| L1 | 4.7 µH, 4A rated | Smaller than LM2596's 100 µH |
-| C1 (output) | 22 µF ceramic | MP1584 stability |
-| C_in | 10 µF ceramic | Input decoupling |
-| D1 | SS34 Schottky | Optional (synchronous but helps transients) |
-
----
-
-## Stage 2 — Precision LDO (FQP27P06 + LM358)
-
-### How It Works
-
-The PMOS transistor (FQP27P06) sits between the MP1584 output and the final output terminal. An op-amp (LM358) compares a divided-down version of the actual output voltage against a **DAC reference (MCP4728 Channel B)**. It drives the PMOS gate to force the output to exactly match the reference.
-
-This eliminates the MP1584's ±1% Vref tolerance error, load regulation error, and most of the switching ripple.
-
-### LDO Schematic
-
-```
-MP1584 out (Vtarget+0.5V)
-        │
-        ├── PMOS Source (FQP27P06 pin 3)
-        │
-        │       FQP27P06 (P-Channel MOSFET)
-        │      ┌─────────────┐
-        └──────┤ S           │
-               │    D        ├──────────────┬── Vout (clean)
-               │             │              │
-               └─────────────┘          [100µF]   [10µF]
-                      │ G                   │         │
-                   [100Ω]                  GND       GND
+ diff amp output ────────────────(+in)
+ MCP4728 CC ──[100k]──┬──────────(−in)
                       │
-               ┌──────┴──────┐
-               │   LM358     │
-               │  op-amp     │
-         Vfb ──┤ −IN   OUT   ├── Gate drive
-               │             │
-  DAC ref ─────┤ +IN         │
-               └─────────────┘
-                      │
-                     GND (op-amp GND)
-                     Vcc = 24V (op-amp supply)
-
-
-Vfb comes from output voltage divider:
-
-Vout ──[Ra = 10 kΩ]──┬── to op-amp −IN
-                      │
-                   [Rb = 51 kΩ]
-                      │
-                     GND
+                 [100nF Cf]──── (output) ──[BAT54]──[10k]──► FB node
 ```
 
-### Transfer Function
+- Below the limit: +in < −in → output integrates to saturation low
+  (~10 mV), BAT54 reverse-biased (<25 nA leakage → sub-mV at the ~4 kΩ
+  FB node) → **zero effect on CV accuracy**.
+- Above the limit: output integrates up, diode conducts, FB rises, the buck
+  folds back until 1 V/A · I = Vdac.
+- τ = R·C = 100k × 100nF = 10 ms — decades slower than the MP1584's
+  internal loop, so the two never fight.
+- The **10 kΩ series resistor** limits injection authority/slew: forcing
+  Vout → 0 needs only ~200 µA into FB; the amp has ~2 mA available. Plenty.
+- **BAT54 over 1N4148**: 0.4 V less swing to traverse out of saturation →
+  faster CC engagement. (1N4148 works if BAT54 unavailable.)
+- **Known quirk — integrator windup:** coming out of saturation the output
+  must slew ~1 V before the diode conducts → expect a few-ms current
+  overshoot when CC first engages. Bring-up test #4 scopes this into a
+  dead short; add an anti-windup clamp (zener/diode across Cf) only if the
+  spike matters for your loads.
+
+### CC setpoint scale
 
 ```
-Op-amp null condition (Vout settled):
-  DAC_ref = Vout × Ra / (Ra + Rb)
-
-Solving for Vout:
-  Vout = DAC_ref × (Ra + Rb) / Ra
-       = DAC_ref × (10k + 51k) / 10k
-       = DAC_ref × 6.1
-
-DAC code for target:
-  DAC_ref = Vout_target × 10 / (10 + 51)  = Vout_target × 0.1639
-  DAC_code = round(DAC_ref × 4096 / 3.3)
+I_limit = Vdac / (10 × 0.1Ω) = Vdac   (volts → amps, 1:1)
+code    = I_limit × 4095 / 2.048  ≈  2000 × amps      (0.5 mA/LSB)
 ```
 
-| Target Vout | DAC Ref | DAC Code |
-|-------------|---------|----------|
-| 20.0 V | 3.28 V | 4070 |
-| 15.0 V | 2.46 V | 3052 |
-| 12.0 V | 1.97 V | 2446 |
-| 9.0 V | 1.47 V | 1827 |
-| 5.0 V | 0.82 V | 1018 |
-| 3.3 V | 0.54 V | 671 |
-| 2.8 V | 0.46 V | 571 |
-
-### Why PMOS and Not NPN/NMOS?
-
-```
-NPN/NMOS (source follower):
-  Vout = Vgate − Vgs_threshold   ← output always lower than gate
-  Hard to use at high side without charge pump
-
-PMOS (common source, source at top):
-  Source = Vin (high side)
-  Gate pulled LOW turns it ON
-  Op-amp can drive gate from 0V (full ON) to 24V (full OFF)
-  No charge pump needed ✓
-```
-
-### Op-Amp Operating Range Check (LM358 at 24V supply)
-
-```
-Source voltage: 0.5V to 20.5V (MP1584 output range)
-Gate must swing BELOW source to turn ON:
-  At Vsource = 20.5V: gate needs to go to ~17V (Vgs = -3.5V → fully ON)
-  LM358 output max = Vcc - 1.5V = 22.5V  > 20.5V ✓ (can turn OFF)
-  LM358 output min = 0V  <  17V needed to turn ON  ✓
-
-At Vsource = 3.3V: gate needs ~1V to fully ON
-  LM358 output = 0 to ~22.5V  →  easily covers 0–1V ✓
-```
-
-### Dropout Voltage
-
-```
-Vdropout = Rdson × Iout
-         = 0.070 Ω × 3 A  =  0.21 V  (typical)
-         = 0.100 Ω × 3 A  =  0.30 V  (worst case, warm)
-
-MP1584 headroom set to 0.5V → leaves 0.2–0.3V regulation margin ✓
-```
+| I limit | DAC code |
+|---------|----------|
+| 0.1 A | 200 |
+| 0.5 A | 1000 |
+| 1.0 A | 2000 |
+| 1.5 A | 3000 |
+| 2.0 A | 4000 |
+| 2.048 A | 4095 (hardware ceiling) |
 
 ---
 
-## Stage 3 — Measurement (INA219)
+## MP1584 Module Mod Procedure
 
-### How It Works
+Per purple module, remove **three** parts (batch layouts vary — identify by
+tracing, not position):
 
-The INA219 measures both **bus voltage** (actual output voltage, 4 mV resolution) and **shunt current** (via 0.1 Ω resistor, 1 mA resolution) over I²C. This replaces the ESP32's internal ADC entirely.
+1. The multiturn **trimpot** (upper divider element, Vout → FB).
+2. The fixed **FB→GND resistor** (2 k–8.2 k depending on batch).
+3. The small **feed-forward capacitor** across the trimpot, if present.
 
-### Connection
+Then **meter-verify the FB pad is open to both Vout and GND** before wiring.
 
-```
-                 Vout (before shunt)
-                         │
-                    ┌────┴────┐
-                    │ INA219  │
-                    │         │
-              IN+ ──┤         ├── SDA ── I²C Bus
-              IN− ──┤         ├── SCL ── I²C Bus
-                    │         ├── VCC ── 3.3V
-                    │         ├── GND ── GND
-                    │    A0   ├── (address select)
-                    │    A1   ├── (address select)
-                    └─────────┘
-                         │
-                    [0.1 Ω shunt, 1W, 2512]
-                         │
-                    Output Terminal (+)
-```
+Layout rules on the carrier PCB:
 
-### Address Configuration
-
-| Channel | A0 | A1 | I²C Address |
-|---------|----|----|-------------|
-| Ch 1 | GND | GND | 0x40 |
-| Ch 2 | VCC | GND | 0x41 |
-
-### INA219 Calibration Register
-
-```
-For 0.1 Ω shunt, max 3.2 A, current LSB = 100 µA:
-  Cal = 0.04096 / (Current_LSB × Rshunt)
-      = 0.04096 / (0.0001 × 0.1)
-      = 4096
-
-Write 0x1000 to calibration register.
-```
+- The R1/R2/R3 network sits **immediately adjacent to the module's FB pad
+  (< 25 mm total FB-node trace/wire)**. The FB node has ~4 kΩ Thevenin
+  impedance and is the one noise-sensitive net in the design.
+- The *long* runs are Vout-sense and the DAC line — both low-impedance /
+  driven nets. Never extend the FB node itself.
+- Keep the FB network away from the module's inductor/SW-node side.
+- Solder the module flat onto the carrier (castellated/pin-header style);
+  do not fly-wire FB.
 
 ---
 
-## Complete Single-Channel Schematic
+## Sensing — INA219 + Remote-Sense Tap
 
 ```
-                             24V DC SMPS
-                                  │
-          ┌───────────────────────┼────────────────────────────────┐
-          │                       │                                │
-       [10µF]                     │                             [100nF]
-          │                       │                                │
-         GND                      │                               GND
-                                  │
-                    ┌─────────────┴──────────────────┐
-                    │           MP1584                │
-         GPIO_EN ───┤ EN                              │
-                    │                            IN   ├── 24V
-          ┌─────────┤ FB                              │
-          │         │                         SW      ├──┐
-          │         └─────────────────────────────────┘  │
-          │                                               │
-          │  Feedback Network:                         [L1: 4.7µH, 4A]
-          │                                               │
-Vmp ──────┼──[R1: 100kΩ]──────── Vout_mp1584 ────────────┤
-          │                          (Vtgt+0.5V)          │
-          ├──[R2: 6.8kΩ]──── GND                      [C1: 22µF]
-          │                                               │
-          └──[R3: 24.3kΩ]─── MCP4728 Ch A (coarse)      GND
-                                                          │
-                                               Vout_mp1584 (Vtgt+0.5V)
-                                                          │
-                                           ┌──────────────┘
-                                           │ Source
-                                    ┌──────┴──────┐
-                                    │  FQP27P06   │ (P-Ch MOSFET)
-                                    │  TO-220     │
-                                    └──────┬──────┘
-                                           │ Drain
-                              ┌────────────┼────────────┐
-                              │            │            │
-                           [100µF]      [10µF]       [100nF]
-                              │            │            │
-                             GND          GND          GND
-                              │
-                         Vout_clean
-                              │
-                   ┌──────────┴──────────┐
-                   │                     │
-              [Ra: 10kΩ]         [0.1Ω shunt, 1W]
-                   │                     │
-              [Rb: 51kΩ]          Output Terminal (+)
-                   │
-                  GND               ┌────────────────┐
-                   │                │    INA219      │
-              Vfb (0–3.3V)    IN+ ──┤                ├── SDA
-                   │          IN- ──┤  0x40 / 0x41   ├── SCL
-                   │                │                ├── 3.3V
-                   │               GND               └────────────────┘
-                   │
-            ┌──────┴──────────┐
-            │    LM358        │
-            │   (Vcc = 24V)   │
-     Vfb ───┤ −IN    OUT      ├──[100Ω]── Gate (FQP27P06)
-            │                 │
-DAC_ref ────┤ +IN             │
-(MCP4728    │                 │
-   Ch B)    └─────────────────┘
-                   │
-       [10nF cap from OUT to −IN for stability]
+MP1584 out ──► IN+ ──[0.1Ω 1W 2512 shunt]── IN− ──► OUT+ terminal
+                        │ (Kelvin-ish: route sense traces from pad centers)
+                     INA219 (0x40 / 0x41)
+                        bus-voltage pin side = IN− = terminal
 ```
+
+- **CV divider (R1) taps AFTER the shunt, at the terminal.** This puts the
+  0.2 V @ 2 A shunt drop *inside* the voltage loop — free remote sense at
+  the terminal. The 0.1 Ω in series with a ~100 kΩ divider is six orders of
+  magnitude down; no measurable loop interaction.
+- Cost: the divider's ≤200 µA flows through the shunt and reads as phantom
+  load current — below practical INA219 resolution; subtract in firmware
+  if you care.
+- INA219 with IN− on the terminal side reports **bus voltage = terminal
+  voltage**, matching what the user sees.
+- Calibration register for 0.1 Ω, 100 µA/LSB: `Cal = 0.04096 / (100e-6 × 0.1) = 4096 → write 0x1000`.
 
 ---
 
-## Two-Channel Full System
+## Output Enable + Power-Up Safety Chain
+
+MP1584 EN: absolute max **6 V** (datasheet warns against tying to VIN),
+internal µA-scale pull-up, rising threshold ~1.5 V.
 
 ```
-                              24V DC SMPS
-                                   │
-            ┌──────────────────────┼──────────────────────┐
-            │                      │                      │
-     ┌──────┴──────┐        ┌──────┴──────┐        ┌──────┴──────┐
-     │  CHANNEL 1  │        │  CHANNEL 2  │        │  ESP32-C3   │
-     │             │        │             │        │             │
-     │  MP1584     │        │  MP1584     │        │  SDA ───────┼──┐
-     │  FQP27P06   │        │  FQP27P06   │        │  SCL ───────┼──┤
-     │  LM358      │        │  LM358      │        │  GPIO5 ─────┼──┼── EN_CH1
-     │  INA219     │        │  INA219     │        │  GPIO6 ─────┼──┼── EN_CH2
-     │  (0x40)     │        │  (0x41)     │        └─────────────┘  │
-     └──────┬──────┘        └──────┬──────┘                         │
-            │ SDA/SCL              │ SDA/SCL                         │
-            └──────────────────────┴─────────────────────────────────┘
-                                   │
-                              I²C Bus
-                                   │
-                           ┌───────┴───────┐
-                           │   MCP4728     │  SOIC-10
-                           │   (0x60)      │
-                           │               │
-                    Ch A ──┤               ├── SDA
-                    Ch B ──┤               ├── SCL
-                    Ch C ──┤               ├── VCC (3.3V)
-                    Ch D ──┤               ├── GND
-                           └───────────────┘
-                             │    │    │    │
-                          MP1584 LDO MP1584 LDO
-                           ref   ref   ref  ref
-                           Ch1   Ch1   Ch2  Ch2
+ESP32 GPIO ──────┬──── EN (MP1584 module)
+                 │
+             [10k pull-down]
+                 │
+                GND
 ```
 
-### MCP4728 Channel Assignment
+Direct 3.3 V GPIO drive is safe. The 10 k pull-down overpowers the internal
+µA pull-up → **channel is OFF whenever the GPIO is Hi-Z** (boot, reset,
+crash). Use non-strapping GPIOs only (avoid 2/8/9 for EN).
 
-| MCP4728 Ch | Function | Target IC | What it controls |
-|------------|----------|-----------|-----------------|
-| A | Ch1 Coarse | MP1584 #1 | Sets MP1584 out to Vtarget + 0.5V |
-| B | Ch1 Fine | LM358 #1 | Sets exact Vtarget for LDO |
-| C | Ch2 Coarse | MP1584 #2 | Sets MP1584 out to Vtarget + 0.5V |
-| D | Ch2 Fine | LM358 #2 | Sets exact Vtarget for LDO |
+**Three-layer power-up safety chain** (because DAC code 0 = 20 V):
+
+1. **MCP4728 EEPROM power-on values**: CV channels = code 4095 (minimum
+   voltage), CC channels = code 0 (zero current). The DAC restores these
+   at POR, long before the ESP32 finishes booting.
+2. **EN pull-downs**: outputs disabled until firmware actively drives EN high.
+3. **Firmware sequence**: write both DACs → settle (≥1 ms) → EN high.
+   Never enable before setpoints are confirmed written.
+
+MCP4728 write discipline: breakout boards tie LDAC low (writes take effect
+immediately) → use **single-channel write commands only**, so updating CH-A
+can never glitch CH-B.
 
 ---
 
-## I²C Address Map
+## Self-Calibration Load
 
-| IC | Address | Set by | Notes |
-|----|---------|--------|-------|
-| MCP4728 | 0x60 | Factory (A0T variant) | Quad DAC |
-| INA219 Ch1 | 0x40 | A0=GND, A1=GND | Voltage + current Ch1 |
-| INA219 Ch2 | 0x41 | A0=VCC, A1=GND | Voltage + current Ch2 |
+Per channel, a GPIO-switched known resistance across the output lets
+firmware verify/trim the INA219 readings at startup with no external gear:
 
-No address conflicts. All four ICs on a single SDA/SCL pair.
+```
+OUT+ ──[10Ω 5W wirewound]──► AO3400 drain
+                              AO3400 gate ──┬── GPIO (CAL)
+                              AO3400 source ── GND
+                                            │
+                                        [10k pull-down]
+```
+
+- **AO3400** (SOT-23, ~30 mΩ at Vgs = 2.5 V): fully specified at 3.3 V gate
+  drive. (IRLZ34N is only characterized at 5 V — marginal here; avoid.)
+- **⚠ Firmware interlock — cal only at Vout ≤ 3 V, time-limited (≤2 s).**
+  10 Ω at 3 V = 0.3 A / 0.9 W ✓. At 20 V it would be 40 W and the resistor
+  burns. The interlock lives in firmware AND in the bring-up procedure.
+- Routine: set 2.0 V → engage load → read I; set 3.0 V → repeat.
+  Expected I = V/10 Ω (±resistor tolerance 5 %); solves INA219 I-gain and
+  cross-checks V-scale. Store trims in NVS.
 
 ---
 
-## Power Budget
+## Local UI — OLED + Buttons
 
-### SMPS Sizing
-
-```
-Per channel, worst case (3A at any voltage):
-  Stage 1 (MP1584):
-    Vin=24V, Vout=20.5V, Iout=3A
-    Pout = 20.5 × 3 = 61.5W
-    Pin  = 61.5 / 0.93 = 66.1W
-    Ploss = 4.6W  (MP1584 gets warm — copper pour heatsink on PCB)
-
-  Stage 2 (PMOS LDO):
-    Pdrop = (20.5 − 20.0) × 3 = 1.5W  (always 0.5V × Iout)
-
-  Per channel total: 66.1W input from 24V
-  Two channels max: 132W
-
-Minimum SMPS: 24V / 6A = 144W
-Recommended SMPS: 24V / 7A = 168W (Mean Well LRS-150-24 or equivalent)
-```
-
-### Typical Operating Power
-
-```
-Both channels at 5V / 1A each (common bench use):
-  MP1584: (5.5 × 1) / 0.93 = 5.9W per channel
-  PMOS:   0.5 × 1 = 0.5W per channel
-  Total input: ~13W from 24V rail → 0.54A from SMPS
-  A 24V/2A adapter is enough for light loads
-```
+- **SSD1306 128×64 I²C OLED @ 0x3C**, powered from the ESP32 module's 3.3 V.
+  Shows per-channel: set V / set I / actual V / actual I / CV-or-CC flag /
+  output state. CC-engaged detection: `I_actual ≈ I_limit && V_actual < V_set`.
+- **3 push buttons** to GND, internal pull-ups: `SEL` (cycle field/channel),
+  `UP`, `DOWN` (adjust; hold = fast repeat). Long-press SEL = output toggle.
+  Exact menu flow is firmware's problem — hardware is just 3 GPIOs.
 
 ---
 
-## Thermal Design
+## Pin Map + I²C Address Map
 
-### FQP27P06 (PMOS)
+### ESP32-C3 Super Mini
+
+| GPIO | Function | Notes |
+|------|----------|-------|
+| 0 | BTN1 (SEL) | input pull-up |
+| 1 | BTN2 (UP) | input pull-up |
+| 2 | BTN3 (DOWN) | strapping pin — must be high at boot: pull-up + idle-open button ✓ |
+| 3 | CAL ch2 | 10k pull-down at gate |
+| 4 | CAL ch1 | 10k pull-down at gate |
+| 5 | EN ch2 | 10k pull-down, non-strapping ✓ |
+| 6 | SDA | 4.7k pull-ups to 3.3 V |
+| 7 | SCL | |
+| 8 | onboard LED | status blink (strapping — output after boot only) |
+| 9 | BOOT button | leave |
+| 10 | EN ch1 | 10k pull-down, non-strapping ✓ |
+| 20/21 | UART RX/TX | debug header, spare |
+
+### I²C bus (single SDA/SCL pair, 100–400 kHz)
+
+| Device | Address |
+|--------|---------|
+| INA219 ch1 | 0x40 (A1=A0=GND) |
+| INA219 ch2 | 0x41 (A0=VCC) |
+| SSD1306 OLED | 0x3C |
+| MCP4728 | 0x60 |
+
+No conflicts. Four devices, ~30 cm total bus max.
+
+---
+
+## Power Budget + Thermal
 
 ```
-Power dissipated = 0.5V × Iout (constant regardless of output voltage)
-
-At 3A: P = 1.5W per channel
-At 1A: P = 0.5W per channel
-
-TO-220 without heatsink: θja = 62°C/W
-  At 1.5W: ΔT = 93°C  →  junction = 118°C  ✗ Too hot
-
-TO-220 with small clip heatsink: θja ≈ 15°C/W
-  At 1.5W: ΔT = 22°C  →  junction = 47°C  ✓
-
-Recommendation: use a 25×25mm aluminium heatsink with thermal paste.
+Worst realistic case per channel: 20 V × 1.5 A = 30 W out → ~33 W in @ 92%
+Two channels + MCU/UI (~1 W):  ~68 W
+SMPS: 24 V / 4 A (96 W) — comfortable. (Old 7 A sizing assumed the LDO stage.)
+Light bench use (5 V/1 A per channel): ~12 W total — a 24 V/2 A brick suffices.
 ```
 
-### MP1584
-
-```
-Power loss is highest at large Vin-to-Vout ratio:
-At Vout=3.3V, Iin_avg ≈ Iout × (Vout/Vin) / η = 3 × (3.3/24) / 0.93 ≈ 0.44A from 24V
-MP1584 internal dissipation ≈ 0.6W
-
-At Vout=20V, Iin_avg ≈ 3 × (20.5/24) / 0.93 ≈ 2.76A from 24V
-MP1584 internal dissipation ≈ 4.6W  →  needs copper pour (SOIC-8 exposed pad)
-
-Recommendation: Connect SOIC-8 exposed pad to a copper pour of at least 4 cm²
-```
-
-### LM358
-
-```
-Op-amp quiescent current: ~1mA at 24V = 24mW  →  negligible, no heatsink needed.
-```
+- **MP1584 module thermal reality:** bare modules are good for ~1.5 A
+  continuous at high duty without airflow; the "3 A" rating is peak.
+  Spec: **2 A up to ~12 V out, derate to 1.5 A continuous at 20 V** —
+  pending bring-up test #5. A clip heatsink on the module IC + airflow
+  reclaims 2 A if needed.
+- 24 V→20 V at 2 A is near the max-duty corner — verify regulation and
+  ripple there (bring-up #2).
+- LM358 at 24 V: ~24 mW quiescent — nothing.
+- 0.1 Ω shunt at 2 A: 0.4 W — use 1 W 2512 (or through-hole equivalent).
+- Add a **1 kΩ preload** per channel if min-load pulse-skipping ripple is
+  ugly at low Vout (decide at bring-up #3).
 
 ---
 
 ## Bill of Materials
 
-### Per Channel
+### Per channel (×2)
 
-| Ref | Component | Value / Part | Package | Qty | Notes |
-|-----|-----------|-------------|---------|-----|-------|
-| U1 | Buck converter | MP1584EN | SOIC-8 | 1 | |
-| Q1 | PMOS pass transistor | FQP27P06 | TO-220 | 1 | Needs heatsink |
-| U2 | Op-amp | LM358 | SOIC-8 or DIP-8 | 1 | |
-| U3 | Current/voltage sense | INA219xAIDR | SOIC-8 | 1 | |
-| R1 | FB upper resistor | 100 kΩ 1% | 0805 | 1 | |
-| R2 | FB lower resistor | 6.8 kΩ 1% | 0805 | 1 | |
-| R3 | DAC injection resistor | 24.3 kΩ 1% | 0805 | 1 | Use 24.3k or 24k |
-| Ra | LDO divider upper | 10 kΩ 1% | 0805 | 1 | |
-| Rb | LDO divider lower | 51 kΩ 1% | 0805 | 1 | |
-| Rg | Gate resistor | 100 Ω | 0805 | 1 | Prevents oscillation |
-| Rc | Stability cap resistor | 10 nF | 0805 | 1 | Op-amp feedback cap |
-| Rs | Shunt resistor | 0.1 Ω 1W 1% | 2512 | 1 | Current sense |
-| L1 | Inductor | 4.7 µH 4A | SMD | 1 | e.g. SRR1260-4R7Y |
-| C1 | MP1584 output cap | 22 µF 35V | 0805/1206 ceramic | 1 | |
-| C2 | Input decoupling | 10 µF 35V | 1206 ceramic | 1 | |
-| C3 | LDO output cap | 100 µF 35V | Electrolytic | 1 | |
-| C4 | LDO HF bypass | 10 µF ceramic | 1206 | 1 | In parallel with C3 |
-| C5 | LDO HF bypass | 100 nF ceramic | 0805 | 1 | In parallel with C3 |
+| Ref | Part | Value / type | Notes |
+|-----|------|-------------|-------|
+| M1 | MP1584 buck module | purple, modded per §5 | ₹30 ea |
+| U1 | LM358 | DIP-8 or SOIC-8 | Vcc = 24 V rail |
+| U2 | INA219 | breakout or SOIC-8 | 0x40 / 0x41 |
+| Rs | Shunt | 0.1 Ω 1 % 1 W (2512 or TH) | shared by INA219 + CC amp |
+| R1 | FB upper | 100 k 1 % E96 | tap at terminal (after shunt) |
+| R2 | FB lower | 6.8 k 1 % | |
+| R3 | DAC injection | 10.5 k 1 % E96 | |
+| R4–R7 | Diff amp | 2× 10 k + 2× 100 k, **0.1 %** | CMRR budget |
+| R8 | Integrator in | 100 k 1 % | |
+| R9 | FB injection series | 10 k | after diode |
+| R10 | EN pull-down | 10 k | |
+| R11 | CAL gate pull-down | 10 k | |
+| C1 | Diff-amp filter | 100 nF, differential across op-amp inputs | no series Rs |
+| C2 | Integrator Cf | 100 nF | τ = 10 ms |
+| D1 | Diode-OR | BAT54 (or 1N4148) | |
+| Q1 | Cal switch | AO3400 | 3.3 V-gate logic FET |
+| R12 | Cal load | 10 Ω 5 W wirewound | interlock ≤ 3 V! |
 
-### Shared (Both Channels)
+### Shared
 
-| Ref | Component | Value / Part | Package | Qty |
-|-----|-----------|-------------|---------|-----|
-| U4 | Quad DAC | MCP4728A0T | SOIC-10 | 1 |
-| U5 | Microcontroller | ESP32-C3 Super Mini | Module | 1 |
-| J1 | Power input | DC barrel or screw terminal 24V | — | 1 |
-| J2,J3 | Output terminals | Banana jack or screw terminal | — | 2 |
+| Part | Qty | Notes |
+|------|-----|-------|
+| ESP32-C3 Super Mini | 1 | |
+| MCP4728 breakout | 1 | 0x60, EEPROM defaults programmed at bring-up #7 |
+| SSD1306 0.96" I²C OLED | 1 | 0x3C |
+| Push buttons | 3 | to GND |
+| 5 V buck module (Mini360/MP1584 fixed) | 1 | 24 V → 5 V for ESP32 module |
+| 24 V/4 A SMPS | 1 | |
+| I²C pull-ups 4.7 k | 2 | |
+| Terminals: DC in + 2× banana pairs | — | |
 
-### Estimated Cost (India)
-
-| Item | Approx Cost |
-|------|-------------|
-| MP1584 × 2 | ₹60 |
-| FQP27P06 × 2 | ₹80 |
-| LM358 × 2 | ₹30 |
-| INA219 × 2 | ₹160 |
-| MCP4728 | ₹120 |
-| Inductors × 2 | ₹80 |
-| Resistors + caps | ₹50 |
-| Heatsinks × 2 | ₹40 |
-| ESP32-C3 | ₹200 |
-| PCB (FR4, milled) | ₹0 (self-milled) |
-| **Total** | **~₹820** |
+**Estimated cost ≈ ₹900–1000** (modules + semis; SMPS extra).
 
 ---
 
-## PCB Design Notes (0.25 mm CNC)
+## Carrier PCB Notes (0.25 mm CNC)
 
-### Component Package Analysis
+The switching stage lives on the purchased modules — the carrier is all
+low-speed analog + digital, which mills easily.
 
-| Component | Package | Min pad gap | 0.25mm bit |
-|-----------|---------|-------------|-----------|
-| MP1584 | SOIC-8 | 0.67 mm | ✓ Comfortable |
-| INA219 | SOIC-8 | 0.67 mm | ✓ Comfortable |
-| MCP4728 | SOIC-10 | 0.67 mm | ✓ Comfortable |
-| LM358 | SOIC-8 | 0.67 mm | ✓ Comfortable |
-| FQP27P06 | TO-220 | 2.54 mm | ✓ Easy |
-| Resistors | 0805 | 0.50 mm | ✓ Fine |
-| Shunt Rs | 2512 | 1.50 mm | ✓ Easy |
-
-> All packages are safely within the 0.25 mm bit capability (no SOT-23 ICs in this design).
-
-### PCB Layout Priorities
-
-```
-1. Power path (24V → MP1584 → PMOS → output terminal):
-   Use 2mm+ track width. Copper pour recommended.
-
-2. MP1584 SW node:
-   Keep short and away from analog components.
-   The switch node is the noisiest point in the design.
-
-3. INA219 shunt resistor placement:
-   Place shunt resistor close to INA219 IN+/IN- pins.
-   Kelvin (4-wire) connection if possible for accuracy.
-
-4. LM358 feedback loop:
-   Keep Ra/Rb close to op-amp −IN pin.
-   Keep 10nF stability cap (Rc) across Rb.
-
-5. Decoupling capacitors:
-   Place C_in (10µF) within 3mm of MP1584 IN pin.
-   Place C1 (22µF) within 5mm of MP1584 OUT pin.
-   Place C3/C4/C5 right at output terminal.
-
-6. I²C bus:
-   Keep SDA/SCL tracks short (<10cm).
-   Add 4.7kΩ pull-ups to 3.3V if not already on ESP32 module.
-
-7. PMOS heatsink:
-   TO-220 mounted to edge of PCB with external heatsink,
-   or use PCB copper pour on drain pad if using D2PAK version.
-```
-
-### Recommended Track Widths
-
-| Signal | Track Width | Notes |
-|--------|-------------|-------|
-| 24V power | 2.5 mm | Input supply |
-| MP1584 output | 2.0 mm | Up to 3A |
-| Output terminal | 2.5 mm | Final output |
-| SW node | 1.5 mm | Short as possible |
-| I²C (SDA/SCL) | 0.4 mm | Signal only |
-| FB network | 0.3 mm | High impedance |
-| GND copper pour | Full pour | Both layers |
+1. **Module footprints:** pin-header rows or castellated pads; module
+   soldered flat. FB pad breaks out to the adjacent R1/R2/R3 cluster
+   (< 25 mm net).
+2. **Power path** 24 V → module → shunt → terminal: 2 mm+ traces / pour.
+3. **Shunt:** route INA219 sense traces from the pad centers (Kelvin-ish);
+   diff-amp 10 k arms tap the same points.
+4. **Diff amp:** the four 0.1 % resistors clustered at the op-amp;
+   the 100 nF differential cap right across pins 2–3 (or 5–6).
+5. **I²C:** < 30 cm total, 4.7 k pull-ups near the ESP32.
+6. **Grounding:** single star point at the SMPS return; keep CC diff-amp
+   ground reference and DAC/INA grounds off the high-current return path.
+7. All packages SOIC/0805/TO/module-scale — no sub-0.5 mm pad gaps; fine
+   for a 0.25 mm bit. (AO3400 is SOT-23: 0.95 mm pitch — OK, mill slowly,
+   or use a pre-made breakout.)
 
 ---
 
-## Firmware Interface
+## Bring-Up & Verification Checklist
 
-### Setting Output Voltage
+Work one channel at a time. DMM + scope on hand. **DACs at safe codes
+(CV = 4095, CC = 0) before every power-on until step 7 locks EEPROM defaults.**
 
-```cpp
-#include <Adafruit_MCP4728.h>
-#include <Adafruit_INA219.h>
+1. **Module mod:** remove trimpot + FB resistor + FF cap; meter FB pad open
+   to Vout and GND. Wire ch1 network only.
+2. **CV sweep:** step DAC code 4095 → 0, log Vout. Verify linearity,
+   endpoints (expect ±2 % pre-cal), slope ≈ 4.76 mV/code. Check the
+   24 V→20 V max-duty corner: load 1 A, confirm regulation + ripple.
+3. **Low-end ripple:** scope Vout at 1.0 V set, 2 A load. If pulse-skipping
+   ripple is excessive, fit the 1 kΩ preload and/or move spec floor up.
+4. **CC into dead short:** set 0.5 / 1.0 / 2.0 A limits, short the output,
+   verify steady-state limit accuracy (±100 mA expected pre-trim) and
+   **scope the engagement overshoot** (integrator windup — few ms spike is
+   expected; decide if anti-windup clamp is needed).
+5. **Thermal:** 20 V × 1.5 A sustained 15 min → module IC temp. Repeat at
+   2 A. Finalize the derating line in [System Specifications](#system-specifications).
+6. **Sensing:** INA219 vs bench DMM at 3–4 points; confirm current sign
+   (IN− = terminal side); run the self-cal load routine manually at 2 V/3 V.
+7. **MCP4728 EEPROM:** program power-on defaults (CV = 4095, CC = 0),
+   power-cycle, scope the outputs during POR — must come up at min voltage
+   before the ESP32 boots. Confirm single-channel writes don't glitch
+   neighbors (LDAC is tied low on breakouts).
+8. **UI smoke test:** OLED + 3 buttons + both INA219s + DAC on the shared
+   bus simultaneously; `i2cdetect`-style scan shows 0x3C/0x40/0x41/0x60.
 
-Adafruit_MCP4728 dac;
-Adafruit_INA219 ina[2] = { Adafruit_INA219(0x40),
-                            Adafruit_INA219(0x41) };
+---
 
-// Channel index: 0 = Ch1, 1 = Ch2
-void set_voltage(uint8_t ch, float target_V) {
-    // Coarse: MP1584 set to Vtarget + 0.5V
-    float v_coarse = target_V + 0.5f;
-    float vdac_c = (16.0f - v_coarse) / 4.09f;
-    uint16_t code_c = (uint16_t)constrain(vdac_c * 4096.0f / 3.3f, 0, 4095);
+## Firmware Architecture Outline
 
-    // Fine: LDO reference = Vtarget × divider ratio
-    float vdac_f = target_V * 10.0f / (10.0f + 51.0f);
-    uint16_t code_f = (uint16_t)constrain(vdac_f * 4096.0f / 3.3f, 0, 4095);
+*(Implementation is a later round — this maps reuse from the `release_v2` firmware.)*
 
-    // MCP4728: Ch A/C = coarse, Ch B/D = fine
-    MCP4728_channel_t ch_coarse = (ch == 0) ? MCP4728_CHANNEL_A : MCP4728_CHANNEL_C;
-    MCP4728_channel_t ch_fine   = (ch == 0) ? MCP4728_CHANNEL_B : MCP4728_CHANNEL_D;
+### Carry over verbatim
 
-    dac.setChannelValue(ch_coarse, code_c);
-    dac.setChannelValue(ch_fine,   code_f);
-}
+- `apply_command()` dispatcher pattern — widened to `(action, channel, value)`
+  with `set_voltage` **and** `set_current` per channel.
+- `DbgPrint` ring logger + telnet/WebSocket log fan-out (keep the two
+  load-bearing workarounds: HWCDC `availableForWrite` truncation guard and
+  `availableForWriteAll()` before every `textAll`).
+- NVS layer + `g_nvs_mux`, auth token + `VB_REQUIRE_AUTH`, WiFi manager
+  task + captive portal (its comments encode real IDF bugs), OTA upload
+  handler, `new design/Power Supply.html` as the web UI base.
+- g++ host-test pattern (`tools/host_test/`).
 
-// Read actual voltage (V)
-float read_voltage(uint8_t ch) {
-    return ina[ch].getBusVoltage_V();
-}
+### Rewrite / drop
 
-// Read actual current (mA)
-float read_current(uint8_t ch) {
-    return ina[ch].getCurrent_mA();
-}
+- `control_math.h` + `voltageControlTask`: the 128-step wiper model dies
+  with the digipot. A linear DAC needs a **2-point gain/offset cal per
+  channel**, not an isotonic map. Keep `cm_median5` only.
+- NVS `calmap` blob → per-channel `{v_gain, v_off, i_gain, i_off}` floats.
+- `web_page.h` generation: replace the manual PowerShell snippet with a
+  **checked-in Node/Python script** (the manual flow already shipped a
+  stale embed once).
 
-// Read power (mW)
-float read_power(uint8_t ch) {
-    return ina[ch].getPower_mW();
-}
-```
+### New
 
-### Initialization
-
-```cpp
-void setup() {
-    Wire.begin();
-
-    // Init DAC — set both channels to safe starting point (3.3V output)
-    dac.begin(0x60);
-    set_voltage(0, 3.3f);
-    set_voltage(1, 3.3f);
-    // Save to EEPROM so power-up is safe next time
-    dac.saveToEEPROM();
-
-    // Init INA219
-    ina[0].begin();
-    ina[1].begin();
-    ina[0].setCalibration_32V_2A();  // or custom calibration
-    ina[1].setCalibration_32V_2A();
-}
-```
-
-### Enable / Disable Outputs
-
-```cpp
-#define EN_CH1  5   // GPIO5
-#define EN_CH2  6   // GPIO6
-
-void enable_output(uint8_t ch, bool en) {
-    digitalWrite(ch == 0 ? EN_CH1 : EN_CH2, en ? HIGH : LOW);
-}
-```
+- MCP4728 + INA219 + SSD1306 drivers (Adafruit libraries).
+- Button/menu task for local UI.
+- Self-cal routine with the **≤ 3 V / ≤ 2 s interlock**.
+- CC/CV status in `/api/status` + WS push: per channel
+  `{v_set, i_limit, v_out, i_out, mode: "CV"|"CC", enabled}`.
+- Startup sequence: load cal from NVS → write DACs → settle → EN as per
+  saved state (default off).
 
 ---
 
@@ -722,25 +552,22 @@ void enable_output(uint8_t ch, bool en) {
 
 | Parameter | Value |
 |-----------|-------|
-| Input voltage | 24 V DC (SMPS) |
-| Input current (max, both channels) | 7 A |
-| Channels | 2 independent |
-| Output voltage range | 2.8 V – 20.0 V |
-| Output current (per channel) | 0 – 3 A |
-| Output voltage resolution | ~4.9 mV/step |
-| Output voltage accuracy | ±5 mV (DC) |
-| Output ripple | 2–5 mV pk-pk |
-| Load regulation | < 10 mV (0–3A) |
-| Line regulation | < 2 mV |
-| Current measurement range | 0 – 3.2 A |
-| Current resolution | 1 mA |
-| Voltage measurement resolution | 4 mV (INA219) |
-| Transient response | < 1 ms |
-| Efficiency (typical) | 90–93% |
-| Control interface | I²C (ESP32-C3) |
-| Web interface | Yes (existing Voltbench firmware) |
-| OTA updates | Yes (existing firmware) |
-| PCB process | 0.25 mm isolation CNC milling |
+| Input | 24 V DC, 4 A SMPS |
+| Channels | 2, independent, common ground |
+| Output voltage | 1.0 – 20.0 V (0.8 V best-effort at light load) |
+| Output current limit | 0 – 2.048 A, hardware CC |
+| Current derating | 2 A ≤ ~12 V out · 1.5 A continuous at 20 V (pending thermal test) |
+| V setpoint resolution | 4.8 mV/LSB (12-bit) |
+| I setpoint resolution | 0.5 mA/LSB |
+| V accuracy (post-cal) | ±20 mV target |
+| CC accuracy (post-trim) | ±75 mA hardware · INA219 readback ±1 % |
+| Ripple | 20–30 mV pk-pk (buck direct, no LDO) |
+| Readback | INA219: 4 mV / 100 µA LSB |
+| Short-circuit | inherently safe (buck folds back) |
+| Local UI | SSD1306 OLED + 3 buttons |
+| Remote | WiFi web UI, WebSocket, REST, OTA (Voltbench stack) |
+| Self-test | per-channel 10 Ω switched cal load (≤ 3 V interlock) |
+| PCB | carrier board, 0.25 mm CNC millable |
 
 ---
 
@@ -748,12 +575,16 @@ void enable_output(uint8_t ch, bool en) {
 
 | Decision | Reason |
 |----------|--------|
-| MP1584 over LM2596 | 10× smaller passives, 93% vs 75% efficiency, SOIC-8 |
-| PMOS LDO over IC LDO | Handles full 2.8–20V range, 210mV dropout, cheapest option |
-| FQP27P06 over other PMOS | 60V/27A rated, 70mΩ Rdson, TO-220 (easy to heatsink), available in India |
-| MCP4728 (quad) over 4× MCP4725 | One SOIC-10 replaces four SOT-23-5, easier to mill |
-| INA219 SOIC-8 over SOT-23 | 0.67mm pad gap vs 0.35mm — comfortable with 0.25mm CNC bit |
-| 24V SMPS over transformer | Clean regulated DC, no rectifier capacitors, compact |
-| LM358 over TL072 | Single-supply 3–32V operation, 24V compatible, available everywhere |
-| 0805 resistors | Balance between solderable size and CNC pad gap |
-| Coarse+Fine DAC split per channel | MP1584 handles gross voltage, LDO handles precision — no PID needed |
+| Direct buck CC/CV over PMOS-LDO stage | 4 DAC channels fit exactly; short-circuit safe; no 40 W CC thermal hazard; matches proven XL4015-board topology |
+| MP1584 modules (modded) over bare chips | ₹30 proven power stage; avoids milling the layout-critical SW node |
+| MCP4728 over 4× MCP4725 | one chip, one address, internal ref, **EEPROM safe power-on values** (safety layer 1) |
+| Internal 2.048 V ref, gain ×1 | setpoints independent of 3.3 V rail tolerance |
+| High-side shunt shared INA219 + CC amp | one shunt; keeps channel grounds common (low-side would float them) |
+| CV divider taps after shunt | free remote sense; shunt drop inside the loop |
+| 0.1 % diff-amp resistors | CMRR: ±73 mA error at 20 V vs ±0.7 A with 1 % |
+| Differential filter cap, no series Rs | series R mismatch would double CMRR error |
+| BAT54 over 1N4148 | 0.4 V less integrator swing → faster CC engagement |
+| EN: 10 k pull-down + direct GPIO | default-off on boot/crash; EN abs max 6 V allows 3.3 V drive |
+| AO3400 over IRLZ34N for cal switch | specified at 3.3 V Vgs |
+| Min spec 1.0 V not 0.8 V | MP1584 min on-time at 24 Vin → CCM floor 1.4–2.4 V; below is pulse-skip territory |
+| 2-point cal over 128-entry map | DAC is linear; v1's isotonic map was a digipot artifact |
