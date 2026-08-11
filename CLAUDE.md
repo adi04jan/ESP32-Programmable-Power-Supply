@@ -58,17 +58,33 @@ For driving a live device from a session (auth flow, endpoint table, safety rule
 
 ## Architecture
 
-**Two files, one translation unit, order-dependent.** `ESP32_power_supply.ino` includes
-`firmware-additions.h` **at line 457 — in the middle of the file, not the top**. The header depends on
-sketch globals and functions (`psState`, `setOutput`, `setVoltage`, `apply_command`, the `g_*`
-volatiles) already being declared. Moving that include, or adding a header that reorders it, breaks the
-build in confusing ways. Split of responsibility:
+**Multiple translation units — order no longer matters** (as of Phase 0, commit `0da524d`).
+Historically this was two files in one TU with `firmware-additions.h` included at line 457, mid-file,
+because it depended on globals declared above it; moving that include broke the build in confusing
+ways. That file is now `vb_net.cpp` and each module is a separate `.cpp`, so nothing depends on being
+textually pasted after anything.
 
-- `.ino` — hardware: pin/I²C definitions, MCP4017 wiper writes, ADC sampling, the control task,
-  calibration sweep, pull-OTA, the `DbgPrint` ring logger, telnet pump, `setup()`/`loop()`.
-- `firmware-additions.h` — everything networked: NVS/Preferences, auth, all `/api/*` routes
-  (`vb_register_routes`), both WebSockets, Wi-Fi manager + captive portal, MQTT, upload-OTA.
-- `control_math.h` — pure, Arduino-free, host-tested. Keep new math here.
+| File | Owns |
+|---|---|
+| `ESP32_power_supply.ino` | `setup()` / `loop()` / task creation only |
+| `vb_config.h` | pins, addresses, version, and the **per-TU `-Os` pragma** |
+| `vb_state.h/.cpp` | globals shared across modules |
+| `vb_debug.h/.cpp` | `DbgPrint` ring → Serial + telnet + `/logws` |
+| `vb_control.h/.cpp` | digipot, ADC, deadbeat controller — **sole I²C + ADC owner** |
+| `vb_console.h/.cpp` | bench console (USB + telnet), log-ring drain |
+| `vb_nvs.h/.cpp` | Preferences, settings, calibration persistence |
+| `vb_ota.h/.cpp` | pull-OTA from GitHub release assets |
+| `vb_net.h/.cpp` | HTTP routes, both WebSockets, WiFi manager, captive AP, MQTT |
+| `control_math.h` | pure, Arduino-free, host-tested. Keep new math here |
+
+Three Arduino-IDE rules this structure depends on:
+
+- **`.cpp` files in a sketch folder get no implicit `#include <Arduino.h>`** (unlike `.ino`).
+  `vb_config.h` provides it, which is one reason every TU must include that header first.
+- **`#pragma GCC optimize("Os")` is per-TU.** It lives in `vb_config.h`. A `.cpp` that forgets to
+  include it compiles unoptimized; losing it across the board costs ~60 KB of flash.
+- **Files in subdirectories are not compiled** unless the directory is named `src/`. Keep the sketch
+  folder flat — flat files also get IDE tabs.
 
 **Concurrency model — one owner per resource.** `voltageControlTask` is the *only* thing that touches
 the ADC and the I²C pot. Async web handlers never do hardware I/O; they read `volatile` globals and
@@ -121,10 +137,10 @@ These cost hours to rediscover. Do not "clean up" the workarounds.
   `new design/ESP32_power_supply.ino` and `new design/firmware-additions.h` are gitignored old drafts
   that still contain the deleted fake telemetry: `vb_read_current()` there returns hardcoded constants
   (0.08 A / 0.14 A / 0.05 A regardless of load), and `cc1..3` / `trip1..3` / `ilim[3]` are derived from
-  that fiction. The canonical `ESP32_power_supply/firmware-additions.h` has **zero** of these fields.
+  that fiction. The canonical `ESP32_power_supply/vb_net.cpp` (the split successor to firmware-additions.h) has **zero** of these fields.
   Reading the draft leads to the false conclusion that current sensing and CC/trip plumbing already
   exist. Always confirm which of the two headers you are reading; the real one lives in
-  `ESP32_power_supply/`.
+  `ESP32_power_supply/` — the real one is now `vb_net.cpp`, not a header.
 
 ## Conventions
 
