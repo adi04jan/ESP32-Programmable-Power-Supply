@@ -383,25 +383,36 @@ OUT+ ──[10Ω 5W wirewound]──► AO3400 drain
 |------|----------|-------|
 | 0 | BTN1 (SEL) | input pull-up |
 | 1 | BTN2 (UP) | input pull-up |
-| 2 | *(unused)* | **strapping pin — deliberately left free, see warning below** |
+| 2 | *(unused)* | **strapping pin — deliberately left unconnected, see warnings** |
 | 3 | CAL ch2 | 10k pull-down at gate |
-| 4 | CAL ch1 | 10k pull-down at gate |
+| 4 | **TEMP (analog in)** | ADC1_CH4 — MCP9700 output via 1k + 100nF RC filter |
 | 5 | EN ch2 | 10k pull-down, non-strapping ✓ |
 | 6 | SDA | 2.2k pull-up to 3.3 V |
 | 7 | SCL | 2.2k pull-up to 3.3 V |
 | 8 | onboard LED | status blink (strapping — drive as output only after boot) |
 | 9 | BOOT button | leave |
 | 10 | EN ch1 | 10k pull-down, non-strapping ✓ |
-| 20 | BTN3 (DOWN) | ex-UART RX — input during ROM boot, so a held button is harmless |
-| 21 | UART TX | debug serial (USB-CDC is the primary console) |
+| 20 | CAL ch1 | 10k pull-down at gate; input during ROM boot, so the load stays off |
+| 21 | BTN3 (DOWN) | **1 kΩ in series** — see UART warning below |
 
-> ⚠ **Do not put a button on GPIO2, GPIO8 or GPIO9.** These are ESP32-C3 strapping
-> pins latched at reset, before any firmware runs. A button to GND on GPIO2 works
-> perfectly in normal use but **prevents the chip from booting if it is held down
-> during power-on** — an unfixable-in-software failure that presents as "the unit is
-> dead." BTN3 therefore lives on GPIO20, which is an input during ROM boot and safe
-> to pull low at any time. GPIO2 stays unconnected (it is ADC-capable, so it remains
-> available as a spare analog input).
+Every ADC-capable pin (GPIO0–4) is now either a plain input or the temperature
+sensor; the cal-load gates were moved off them because they are just digital outputs
+and ADC pins are the scarce resource on this part.
+
+> ⚠ **Nothing that sits low at power-on may touch GPIO2, GPIO8 or GPIO9.** These are
+> ESP32-C3 strapping pins latched at reset, before any firmware runs, and they must
+> read high. This rules out two tempting uses of the "spare" GPIO2: a button to GND
+> (works fine until someone holds it during power-on, then the unit appears dead), and
+> **any analog temperature sensor** — an MCP9700 reads ~750 mV at room temperature and
+> an LM35 ~250 mV, both far below the ~2.4 V input-high threshold, so either would
+> stop the board booting. A cal-load gate is equally unusable there because it needs a
+> pull-down. GPIO2 is therefore left unconnected on purpose.
+
+> ⚠ **BTN3 on GPIO21 needs a 1 kΩ series resistor.** GPIO21 is U0TXD, which the ROM
+> bootloader actively drives while printing its boot log. A bare button to ground
+> would short a driven output; 1 kΩ limits that to ~3.3 mA while still reading as a
+> solid low through the ~45 kΩ internal pull-up. (GPIO20 does not need this — it is
+> U0RXD, an input during boot, which is why the cal gate is safe there.)
 
 > **I²C pull-ups are 2.2 kΩ, not 4.7 kΩ.** At 400 kHz the rise time must stay under
 > 300 ns; `t_r ≈ 0.85·R·C` makes 4.7 kΩ marginal at ~70 pF and clearly inadequate if
@@ -413,22 +424,49 @@ OUT+ ──[10Ω 5W wirewound]──► AO3400 drain
 
 | Device | Address |
 |--------|---------|
-| MCP9808 temp sensor | 0x18 |
 | SSD1306 OLED | 0x3C |
 | INA219 ch1 | 0x40 (A1=A0=GND) |
 | INA219 ch2 | 0x41 (A0=VCC) |
 | MCP4728 | 0x60 |
 
-No conflicts. Five devices, ~30 cm total bus max, 2.2 kΩ pull-ups.
+No conflicts. Four devices, ~30 cm total bus max, 2.2 kΩ pull-ups.
 
-**Why the MCP9808 is required, not optional.** Over-temperature protection is a
-specified feature, and there is nowhere else to put a sensor: the ESP32-C3's ADC is
-limited to GPIO0–GPIO4, and all five of those pins are already committed (three
-buttons, two cal-load gates), so an analog NTC has no home. The MCP9808 costs ~₹100,
-consumes zero GPIO, and — mounted on the heatsink or between the two MP1584 modules —
-measures the thing that actually gets hot rather than the MCU die. Firmware falls back
-to the ESP32's internal `temperatureRead()` with a wider threshold if the part is
-absent, and reports which source is in use.
+### Temperature sensing — MCP9700 on GPIO4 (analog)
+
+Over-temperature protection is a required feature, but it only needs to answer one
+question: *is the heatsink approaching 80 °C?* A ±0.25 °C I²C part is overkill for a
+thermal cutoff, so this uses a **MCP9700 / MCP9700A** (TO-92, ~₹30):
+
+```
+3V3 ──┬── MCP9700 VDD
+      │            OUT ──[1 kΩ]──┬── GPIO4 (ADC1_CH4)
+GND ──┴── MCP9700 GND            │
+                             [100 nF]
+                                 │
+                                GND
+```
+
+- Transfer function: **V_out = 500 mV + 10 mV/°C.** So 750 mV at 25 °C, **1.30 V at
+  80 °C** — comfortably inside the ESP32-C3's ~0–2.45 V range at 12 dB attenuation.
+  Firmware: `T_C = (mV − 500) / 10`. No lookup table, no Steinhart-Hart.
+- The 1 kΩ + 100 nF RC is **not optional**: the sensor sits near a switching regulator
+  on flying leads, and the ADC input is high-impedance.
+- Resolution is irrelevant here (0.06 °C/LSB); noise is what matters, so firmware
+  averages 16 samples and applies the 1 s debounce specified in the protection section.
+- Mount it against the heatsink or between the two MP1584 modules — it measures what
+  actually gets hot, on two-plus-one cheap wires, without hanging capacitance off the
+  I²C bus.
+
+**Cheaper still:** a 10 kΩ NTC + 10 kΩ pull-up costs about ₹8 and mounts even more
+easily, at the price of a nonlinear curve (a 3-point table around the trip threshold
+is sufficient — full Steinhart-Hart is unnecessary when you only care about one
+temperature). **Zero-pin alternative:** an LM75A I²C breakout (~₹50, address 0x48)
+needs no pin changes at all if you would rather keep the GPIO map as it was.
+
+**Fallback:** if no external sensor is fitted, firmware uses the ESP32's internal
+`temperatureRead()` with a wider threshold and reports `temp_src` in the status frame
+so it is obvious which is in use. Note this measures the MCU die, which correlates
+poorly with the buck modules — it is a degraded mode, not an equivalent.
 
 ---
 
