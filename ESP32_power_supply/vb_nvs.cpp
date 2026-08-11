@@ -1,0 +1,125 @@
+#include "vb_nvs.h"
+#include "vb_state.h"        // g_cal_mv / g_cal_valid for cal_save/cal_load
+#include "vb_debug.h"
+
+VBSettings vb;
+
+Preferences vbPrefs;
+
+// One mutex around every vbPrefs.begin()/end() pair — cal_save runs on the
+// control task while web handlers save settings on the AsyncTCP task.
+SemaphoreHandle_t g_nvs_mux = nullptr;
+static void nvs_lock()   { xSemaphoreTake(g_nvs_mux, portMAX_DELAY); }
+static void nvs_unlock() { xSemaphoreGive(g_nvs_mux); }
+
+void vb_load() {
+  nvs_lock();
+  vbPrefs.begin("voltbench", true);
+  vb.mdns          = vbPrefs.getString ("mdns",          vb.mdns);
+  vb.require_login = vbPrefs.getBool   ("req_login",     vb.require_login);
+  vb.password      = vbPrefs.getString ("password",      vb.password);
+  vb.ota_url       = vbPrefs.getString ("ota_url",       vb.ota_url);
+  vb.ota_ssl       = vbPrefs.getBool   ("ota_ssl",       vb.ota_ssl);
+  vb.ota_auto      = vbPrefs.getBool   ("ota_auto",      vb.ota_auto);
+  vb.exp_fast      = vbPrefs.getBool   ("e_fast",        vb.exp_fast);
+  vb.exp_smooth    = vbPrefs.getBool   ("e_smooth",      vb.exp_smooth);
+  vb.exp_dial      = vbPrefs.getBool   ("e_dial",        vb.exp_dial);
+  vb.mqtt_en       = vbPrefs.getBool   ("mq_en",         vb.mqtt_en);
+  vb.mqtt_host     = vbPrefs.getString ("mq_host",       vb.mqtt_host);
+  vb.mqtt_port     = vbPrefs.getUShort ("mq_port",       vb.mqtt_port);
+  vb.mqtt_user     = vbPrefs.getString ("mq_user",       vb.mqtt_user);
+  vb.mqtt_pass     = vbPrefs.getString ("mq_pass",       vb.mqtt_pass);
+  vb.mqtt_topic    = vbPrefs.getString ("mq_topic",      vb.mqtt_topic);
+  for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++) {
+    vb.ssid[i] = vbPrefs.getString(("ssid" + String(i)).c_str(), "");
+    vb.pass[i] = vbPrefs.getString(("pass" + String(i)).c_str(), "");
+  }
+  vb.auth_token    = vbPrefs.getString ("token",         vb.auth_token);
+  vbPrefs.end();
+  nvs_unlock();
+}
+
+void vb_save() {
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putString ("mdns",      vb.mdns);
+  vbPrefs.putBool   ("req_login", vb.require_login);
+  vbPrefs.putString ("password",  vb.password);
+  vbPrefs.putString ("ota_url",   vb.ota_url);
+  vbPrefs.putBool   ("ota_ssl",   vb.ota_ssl);
+  vbPrefs.putBool   ("ota_auto",  vb.ota_auto);
+  vbPrefs.putBool   ("e_fast",    vb.exp_fast);
+  vbPrefs.putBool   ("e_smooth",  vb.exp_smooth);
+  vbPrefs.putBool   ("e_dial",    vb.exp_dial);
+  vbPrefs.putBool   ("mq_en",     vb.mqtt_en);
+  vbPrefs.putString ("mq_host",   vb.mqtt_host);
+  vbPrefs.putUShort ("mq_port",   vb.mqtt_port);
+  vbPrefs.putString ("mq_user",   vb.mqtt_user);
+  vbPrefs.putString ("mq_pass",   vb.mqtt_pass);
+  vbPrefs.putString ("mq_topic",  vb.mqtt_topic);
+  vbPrefs.end();
+  nvs_unlock();
+}
+
+// Persist just the auth token (called after login / first-boot token mint —
+// avoids re-writing every other setting on the hot login path).
+void vb_save_token() {
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putString("token", vb.auth_token);
+  vbPrefs.end();
+  nvs_unlock();
+}
+
+// Output-1 calibration map persistence (256-byte blob in NVS)
+void cal_save() {
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putBytes("calmap", (const void*)g_cal_mv, sizeof(g_cal_mv));
+  vbPrefs.putBool ("calok",  g_cal_valid);
+  vbPrefs.end();
+  nvs_unlock();
+}
+void cal_load() {
+  nvs_lock();
+  vbPrefs.begin("voltbench", true);
+  if (vbPrefs.getBool("calok", false)) {
+    size_t n = vbPrefs.getBytes("calmap", (void*)g_cal_mv, sizeof(g_cal_mv));
+    g_cal_valid = (n == sizeof(g_cal_mv));
+  }
+  vbPrefs.end();
+  nvs_unlock();
+}
+
+void vb_save_wifi_slot(uint8_t i, const String &ssid, const String &pass) {
+  if (i >= VBSettings::MAX_SSID) return;
+  vb.ssid[i] = ssid; vb.pass[i] = pass;
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putString(("ssid" + String(i)).c_str(), ssid);
+  vbPrefs.putString(("pass" + String(i)).c_str(), pass);
+  vbPrefs.end();
+  nvs_unlock();
+}
+
+bool vb_remember_wifi(const String &ssid, const String &pass) {
+  for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++)
+    if (vb.ssid[i] == ssid) { vb_save_wifi_slot(i, ssid, pass); return true; }
+  for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++)
+    if (vb.ssid[i].isEmpty()) { vb_save_wifi_slot(i, ssid, pass); return true; }
+  vb_save_wifi_slot(0, ssid, pass);
+  return true;
+}
+
+void vb_forget_wifi(const String &ssid) {
+  for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++)
+    if (vb.ssid[i] == ssid) vb_save_wifi_slot(i, "", "");
+}
+
+void vb_factory_reset() {
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.clear();
+  vbPrefs.end();
+  nvs_unlock();
+}
