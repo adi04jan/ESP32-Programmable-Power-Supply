@@ -346,6 +346,18 @@ OUT+ ──[10Ω 5W wirewound]──► AO3400 drain
 - **⚠ Firmware interlock — cal only at Vout ≤ 3 V, time-limited (≤2 s).**
   10 Ω at 3 V = 0.3 A / 0.9 W ✓. At 20 V it would be 40 W and the resistor
   burns. The interlock lives in firmware AND in the bring-up procedure.
+- **⚠ The interlock has no hardware timeout — the ESP32 task watchdog is the backstop.**
+  If the control task hangs while CAL is asserted, the gate pull-down only helps after
+  a full reset, and the resistor cooks in the meantime. So: enable the task watchdog on
+  the control task (5 s), and implement calibration as a *state within the control
+  loop*, never as a blocking subroutine full of delays. (v1's `run_cal_sweep` blocked
+  for a full minute — that pattern must not be carried over.) If you want fail-safety
+  independent of firmware, AC-couple the gate drive or fit a thermal fuse.
+- **The ≤3 V limit caps CC trimming at ~0.3 A, and that is sufficient — don't "fix" it
+  with a bigger resistor.** The CC loop's *gain* is set by 0.1 % resistors and is
+  already trustworthy; the dominant error is the LM358's input offset voltage, which is
+  an *offset*. A 0.1 A / 0.25 A point pair captures that offset exactly, and the gain
+  then extrapolates soundly to the full 2 A.
 - Routine: set 2.0 V → engage load → read I; set 3.0 V → repeat.
   Expected I = V/10 Ω (±resistor tolerance 5 %); solves INA219 I-gain and
   cross-checks V-scale. Store trims in NVS.
@@ -371,27 +383,52 @@ OUT+ ──[10Ω 5W wirewound]──► AO3400 drain
 |------|----------|-------|
 | 0 | BTN1 (SEL) | input pull-up |
 | 1 | BTN2 (UP) | input pull-up |
-| 2 | BTN3 (DOWN) | strapping pin — must be high at boot: pull-up + idle-open button ✓ |
+| 2 | *(unused)* | **strapping pin — deliberately left free, see warning below** |
 | 3 | CAL ch2 | 10k pull-down at gate |
 | 4 | CAL ch1 | 10k pull-down at gate |
 | 5 | EN ch2 | 10k pull-down, non-strapping ✓ |
-| 6 | SDA | 4.7k pull-ups to 3.3 V |
-| 7 | SCL | |
-| 8 | onboard LED | status blink (strapping — output after boot only) |
+| 6 | SDA | 2.2k pull-up to 3.3 V |
+| 7 | SCL | 2.2k pull-up to 3.3 V |
+| 8 | onboard LED | status blink (strapping — drive as output only after boot) |
 | 9 | BOOT button | leave |
 | 10 | EN ch1 | 10k pull-down, non-strapping ✓ |
-| 20/21 | UART RX/TX | debug header, spare |
+| 20 | BTN3 (DOWN) | ex-UART RX — input during ROM boot, so a held button is harmless |
+| 21 | UART TX | debug serial (USB-CDC is the primary console) |
+
+> ⚠ **Do not put a button on GPIO2, GPIO8 or GPIO9.** These are ESP32-C3 strapping
+> pins latched at reset, before any firmware runs. A button to GND on GPIO2 works
+> perfectly in normal use but **prevents the chip from booting if it is held down
+> during power-on** — an unfixable-in-software failure that presents as "the unit is
+> dead." BTN3 therefore lives on GPIO20, which is an input during ROM boot and safe
+> to pull low at any time. GPIO2 stays unconnected (it is ADC-capable, so it remains
+> available as a spare analog input).
+
+> **I²C pull-ups are 2.2 kΩ, not 4.7 kΩ.** At 400 kHz the rise time must stay under
+> 300 ns; `t_r ≈ 0.85·R·C` makes 4.7 kΩ marginal at ~70 pF and clearly inadequate if
+> the OLED hangs off a flying lead (~150 pF → ~600 ns). Dropping to 100 kHz is not an
+> acceptable alternative — it quadruples a full OLED frame flush to ~104 ms, which the
+> control loop cannot absorb.
 
 ### I²C bus (single SDA/SCL pair, 100–400 kHz)
 
 | Device | Address |
 |--------|---------|
+| MCP9808 temp sensor | 0x18 |
+| SSD1306 OLED | 0x3C |
 | INA219 ch1 | 0x40 (A1=A0=GND) |
 | INA219 ch2 | 0x41 (A0=VCC) |
-| SSD1306 OLED | 0x3C |
 | MCP4728 | 0x60 |
 
-No conflicts. Four devices, ~30 cm total bus max.
+No conflicts. Five devices, ~30 cm total bus max, 2.2 kΩ pull-ups.
+
+**Why the MCP9808 is required, not optional.** Over-temperature protection is a
+specified feature, and there is nowhere else to put a sensor: the ESP32-C3's ADC is
+limited to GPIO0–GPIO4, and all five of those pins are already committed (three
+buttons, two cal-load gates), so an analog NTC has no home. The MCP9808 costs ~₹100,
+consumes zero GPIO, and — mounted on the heatsink or between the two MP1584 modules —
+measures the thing that actually gets hot rather than the MCU die. Firmware falls back
+to the ESP32's internal `temperatureRead()` with a wider threshold if the part is
+absent, and reports which source is in use.
 
 ---
 
@@ -413,8 +450,14 @@ Light bench use (5 V/1 A per channel): ~12 W total — a 24 V/2 A brick suffices
   ripple there (bring-up #2).
 - LM358 at 24 V: ~24 mW quiescent — nothing.
 - 0.1 Ω shunt at 2 A: 0.4 W — use 1 W 2512 (or through-hole equivalent).
-- Add a **1 kΩ preload** per channel if min-load pulse-skipping ripple is
-  ugly at low Vout (decide at bring-up #3).
+- Fit the **1 kΩ preload** per channel **unconditionally** — not conditionally on
+  ripple as earlier drafts suggested. There is a second, independent and more
+  important reason for it: **the output has no discharge path.** After a protection
+  trip or a step-down into a capacitive load, the terminal holds its old voltage with
+  nothing to bleed it. That means OVP keeps reading high and the user's attempt to
+  clear the trip is refused until the charge decays on its own — potentially minutes
+  into a large capacitor. One resistor per channel fixes both the light-load ripple
+  and the stuck-voltage problem. Cost: 400 mW at 20 V, 20 mA of phantom load.
 
 ---
 
@@ -452,7 +495,9 @@ Light bench use (5 V/1 A per channel): ~12 W total — a 24 V/2 A brick suffices
 | Push buttons | 3 | to GND |
 | 5 V buck module (Mini360/MP1584 fixed) | 1 | 24 V → 5 V for ESP32 module |
 | 24 V/4 A SMPS | 1 | |
-| I²C pull-ups 4.7 k | 2 | |
+| MCP9808 temp sensor breakout | 1 | 0x18, on the heatsink — required for OTP |
+| 1 kΩ 1 W preload resistor | 2 | one per channel, mandatory (discharge path) |
+| I²C pull-ups 2.2 k | 2 | **not** 4.7 k — see §10 |
 | Terminals: DC in + 2× banana pairs | — | |
 
 **Estimated cost ≈ ₹900–1000** (modules + semis; SMPS extra).
@@ -559,7 +604,8 @@ Work one channel at a time. DMM + scope on hand. **DACs at safe codes
 | Current derating | 2 A ≤ ~12 V out · 1.5 A continuous at 20 V (pending thermal test) |
 | V setpoint resolution | 4.8 mV/LSB (12-bit) |
 | I setpoint resolution | 0.5 mA/LSB |
-| V accuracy (post-cal) | ±20 mV target |
+| V accuracy, self-calibrated | **±100 mV** (bounded by the INA219's own ±0.5 % bus-ADC gain error) |
+| V accuracy, DMM-calibrated | **±20 mV** (two-point fit against an external meter) |
 | CC accuracy (post-trim) | ±75 mA hardware · INA219 readback ±1 % |
 | Ripple | 20–30 mV pk-pk (buck direct, no LDO) |
 | Readback | INA219: 4 mV / 100 µA LSB |
