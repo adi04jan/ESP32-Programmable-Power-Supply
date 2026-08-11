@@ -15,7 +15,7 @@ Two hardware generations coexist in this repo:
 | Branch | `main`, `release_v2` | `v2-hardware` |
 | Topology | LM2596 + MCP4017 digipot, 3 outputs, CV only | MP1584 + MCP4728 + LM358, 2 channels, hardware CC+CV |
 | Firmware | `ESP32_power_supply/` (v3.0.1) | not written yet |
-| Reference | `README.md` | `Hardware/HARDWARE-DESIGN-V2.md` |
+| Reference | `README.md` | `Hardware/HARDWARE-DESIGN-V2.md` + `docs/superpowers/specs/2026-08-11-v2.1-firmware-and-software-design.md` |
 
 `release_v2` is the live firmware line. `v2-hardware` currently holds only the redesign document —
 do not assume code there matches it.
