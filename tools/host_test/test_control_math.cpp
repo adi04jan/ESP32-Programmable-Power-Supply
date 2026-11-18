@@ -41,6 +41,19 @@ int main() {
   { // a large HIGH reading may still step down (the safe direction)
     assert(cm_correction_step(map, 40, 0, +400, map[41]) == 41); }
 
+  // --- fixed map (replaces the sweep): this board's fitted curve
+  { uint16_t f[CM_STEPS]; cm_fixed_map(f);
+    for (int s = 0; s < 9; s++) assert(f[s] == CM_RAIL_MV);          // above the input rail
+    for (int s = 10; s < CM_STEPS; s++) assert(f[s] < f[s - 1]);     // strictly falling: no plateaus
+    assert(f[12] >= 13413 && f[12] <= 13433);   // measured unloaded at step 12: 13430 mV
+    assert(f[127] >= 2580 && f[127] <= 2600);   // bottom of range (sweeps: 2535 / 2606)
+    assert(cm_best_step(f, 13485) == 12);       // the build-box gateway setpoint: unchanged step
+    // 13.7 V must not pick step 11 (~14.3 V real): the noisy swept map did (+0.6 V)
+    assert(cm_best_step(f, 13700) == 12);
+    for (uint32_t t = 2500; t <= 16000; t += 10) {  // every valid target: a step, never > +300 mV
+      int s = cm_best_step(f, t); assert(s >= 0 && f[s] <= t + CM_OV_MARGIN_MV); }
+  }
+
   puts("control_math: all checks passed");
   return 0;
 }

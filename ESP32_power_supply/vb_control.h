@@ -28,25 +28,22 @@ bool setVoltageMv(uint32_t mv);
 bool apply_command(const String &action, uint8_t ch, float val, uint8_t src = SRC_SYS);
 
 // Boot: log the reset, and if vb.restore is set, re-apply the setpoint saved
-// before the reboot and queue the saved outputs. Call after vb_load()+cal_load(),
+// before the reboot and queue the saved outputs. Call after vb_load()+cal_init(),
 // BEFORE creating the control task.
 void out_boot();
-
-extern volatile bool g_sweeping;          // calibration sweep in progress
 
 // Current wiper resistance, for diagnostics/console output (NOT the load).
 float dpCalcR();
 
-// Build the step->mV calibration map by sweeping the wiper with output 1 OFF.
-// Blocks ~1 minute; only ever called from the control task.
-void run_cal_sweep();
+// Fill g_cal_mv with this board's fixed step->mV map. Call once in setup().
+void cal_init();
 
 void voltageControlTask(void *pvParameters);
 
 int read_5V_volt();
 int read_3V3_volt();
 
-const char *vb_ctl_name(uint8_t state);   // idle/settling/verifying/frozen/busy
+const char *vb_ctl_name(uint8_t state);   // idle/settling/verifying/frozen
 const char *vb_reset_reason();            // why the ESP32 last reset
 uint8_t     vb_pending_mask();            // channels with a queued re-enable
 

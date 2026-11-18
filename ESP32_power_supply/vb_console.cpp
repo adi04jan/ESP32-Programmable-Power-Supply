@@ -53,7 +53,7 @@ static UsbReply UsbOut;
 
 static const char HELP[] =
   "OK cmds: ? s id v<volts|mV> o<1-3> <0|1> o0 o1 off cycle <ch> <sec> "
-  "m! c log? quiet <0|1> restore <0|1|?> help";
+  "log? quiet <0|1> restore <0|1|?> help";
 
 static void reply_outputs(Print &out, const char *prefix) {
   out.printf("OK %sout=%d,%d,%d\n", prefix, psState.output1, psState.output2, psState.output3);
@@ -91,12 +91,12 @@ void console_exec(const String &lineIn, Print &out, uint8_t src) {
   else if (l == "help") out.println(HELP);
   else if (l == "o0" || l == "o1") {                          // legacy: output 1
     apply_command("toggle", 1, l[1] == '1' ? 1.0f : 0.0f, src)
-      ? reply_outputs(out, "") : (void)out.println("ERR busy calibration sweep owns output 1");
+      ? reply_outputs(out, "") : (void)out.println("ERR rejected");
   }
   else if (l.length() == 4 && p[0] == 'o' && p[1] >= '1' && p[1] <= '3' && p[2] == ' ' &&
            (p[3] == '0' || p[3] == '1')) {
     apply_command("toggle", p[1] - '0', p[3] == '1' ? 1.0f : 0.0f, src)
-      ? reply_outputs(out, "") : (void)out.println("ERR busy calibration sweep owns output 1");
+      ? reply_outputs(out, "") : (void)out.println("ERR rejected");
   }
   else if (l == "off") { apply_command("all_off", 0, 0, src); reply_outputs(out, ""); }
   else if (p[0] == 'v' && l.length() > 1) {                  // setpoint ONLY — never switches
@@ -119,17 +119,10 @@ void console_exec(const String &lineIn, Print &out, uint8_t src) {
         !vp_parse_u32(a.substring(sp + 1).c_str(), &sec))
       out.println("ERR arg expected cycle <ch 1-3> <seconds 1-3600>");
     else if (!apply_command("cycle", (uint8_t)(ch > 255 ? 0 : ch), (float)sec, src))
-      out.println("ERR range ch 1-3, seconds 1-3600 (or output 1 busy sweeping)");
+      out.println("ERR range ch 1-3, seconds 1-3600");
     else out.printf("OK cycle ch=%lu off_s=%lu (back on only if the rail checks out)\n",
                     (unsigned long)ch, (unsigned long)sec);
   }
-  else if (l == "m!") {
-    if (g_sweeping || g_cal_sweep_req) out.println("ERR busy sweep already running");
-    else { g_cal_sweep_req = true;
-           out.println("OK sweep started: output 1 OFF ~60 s, switched back on after if it was on"); }
-  }
-  else if (l == "m") out.println("ERR confirm send m! to run the ~60 s calibration sweep (output 1 is switched OFF)");
-  else if (l == "c") out.printf("OK cal=%d sweeping=%d\n", g_cal_valid ? 1 : 0, g_sweeping ? 1 : 0);
   else if (l == "log?") {
     char buf[96];
     int n = vb_log_count();

@@ -1,12 +1,11 @@
 #include "vb_nvs.h"
-#include "vb_state.h"        // g_cal_mv / g_cal_valid for cal_save/cal_load
 #include "vb_debug.h"
 
 VBSettings vb;
 
 Preferences vbPrefs;
 
-// One mutex around every vbPrefs.begin()/end() pair — cal_save runs on the
+// One mutex around every vbPrefs.begin()/end() pair — vb_save_outstate runs on the
 // control task while web handlers save settings on the AsyncTCP task.
 SemaphoreHandle_t g_nvs_mux = nullptr;
 static void nvs_lock()   { xSemaphoreTake(g_nvs_mux, portMAX_DELAY); }
@@ -104,26 +103,6 @@ uint8_t vb_load_wifi_drop(uint32_t *uptime_s) {
   vbPrefs.end();
   nvs_unlock();
   return r;
-}
-
-// Output-1 calibration map persistence (256-byte blob in NVS)
-void cal_save() {
-  nvs_lock();
-  vbPrefs.begin("voltbench", false);
-  vbPrefs.putBytes("calmap", (const void*)g_cal_mv, sizeof(g_cal_mv));
-  vbPrefs.putBool ("calok",  g_cal_valid);
-  vbPrefs.end();
-  nvs_unlock();
-}
-void cal_load() {
-  nvs_lock();
-  vbPrefs.begin("voltbench", true);
-  if (vbPrefs.getBool("calok", false)) {
-    size_t n = vbPrefs.getBytes("calmap", (void*)g_cal_mv, sizeof(g_cal_mv));
-    g_cal_valid = (n == sizeof(g_cal_mv));
-  }
-  vbPrefs.end();
-  nvs_unlock();
 }
 
 void vb_save_wifi_slot(uint8_t i, const String &ssid, const String &pass) {

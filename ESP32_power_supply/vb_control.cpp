@@ -1,6 +1,6 @@
 #include "vb_control.h"
 #include "vb_debug.h"
-#include "vb_nvs.h"          // cal_save() — persists the swept map
+#include "vb_nvs.h"          // vb.restore / vb_save_outstate()
 #include "control_math.h"    // pure control math, host-tested (tools/host_test/)
 #include <Wire.h>
 #include <esp_system.h>      // esp_reset_reason()
@@ -64,10 +64,10 @@ int read_3V3_volt() {
 //   Change log — last VB_LOG_N output/setpoint changes with their source.
 //   RAM only: it answers "who switched it?" for the current boot.
 // =============================================================================
-enum : uint8_t { LG_BOOT, LG_SET, LG_ON, LG_OFF, LG_ALLOFF, LG_CYCLE, LG_SWEEP,
-                 LG_SWEEP_ABORT, LG_AUTO_ON, LG_AUTO_FAIL, LG_RESTORE };
-static const char *const LG_NAME[]  = {"boot","set","on","off","all_off","cycle","sweep",
-                                       "sweep_abort","auto_on","auto_on_fail","restore"};
+enum : uint8_t { LG_BOOT, LG_SET, LG_ON, LG_OFF, LG_ALLOFF, LG_CYCLE,
+                 LG_AUTO_ON, LG_AUTO_FAIL, LG_RESTORE };
+static const char *const LG_NAME[]  = {"boot","set","on","off","all_off","cycle",
+                                       "auto_on","auto_on_fail","restore"};
 static const char *const SRC_NAME[] = {"sys","usb","telnet","http","ws","mqtt"};
 
 #define VB_LOG_N 32
@@ -99,7 +99,7 @@ bool vb_log_line(int i, char *buf, size_t n) {
 }
 
 const char *vb_ctl_name(uint8_t s) {
-  static const char *const N[] = {"idle","settling","verifying","frozen","busy"};
+  static const char *const N[] = {"idle","settling","verifying","frozen","?"};
   return N[s > 4 ? 4 : s];
 }
 
@@ -123,7 +123,7 @@ const char *vb_reset_reason() {
 // =============================================================================
 //   Output switching + deferred re-enable
 //
-//   cycle, the post-sweep re-enable and restore-after-reboot all queue a
+//   cycle and restore-after-reboot both queue a
 //   channel here; the control task (out_service) switches it on once the rail
 //   is proven right. An explicit toggle/all_off cancels the queue under the same
 //   lock as the switch itself, so the host's last word always wins.
@@ -132,7 +132,6 @@ static portMUX_TYPE g_out_mux   = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t      g_pend_mask = 0;              // bit (ch-1)
 static uint32_t     g_pend_at[3];                 // millis() not-before
 static uint8_t      g_pend_src[3];
-volatile bool       g_sweeping  = false;
 
 void setOutput(uint8_t output, bool state) {
   if (output < 1 || output > 3) return;   // single bounds guard for all callers
@@ -168,7 +167,7 @@ uint8_t vb_pending_mask() { return g_pend_mask; }
 static bool out_ready(uint8_t ch) {
   if (ch == 1) {
     uint32_t t = g_target_mV, m = g_measured_mV;
-    return g_vctrl_state == 3 && !g_sweeping && (m > t ? m - t : t - m) <= 500;
+    return g_vctrl_state == 3 && (m > t ? m - t : t - m) <= 500;
   }
   if (ch == 2) return g_5v_mV  >= 4500 && g_5v_mV  <= 5500;
   return              g_3v3_mV >= 3000 && g_3v3_mV <= 3600;
@@ -201,7 +200,7 @@ static void out_persist() {
   static uint32_t seen_mv, seen_at, saved_mv;
   static uint8_t  seen_mask, saved_mask;
   if (!init) { saved_mv = seen_mv = vb.r_mv; saved_mask = seen_mask = vb.r_out; seen_at = millis(); init = true; }
-  if (g_pend_mask || g_sweeping) return;          // mid-cycle/restore is not a state worth keeping
+  if (g_pend_mask) return;          // mid-cycle/restore is not a state worth keeping
   uint8_t  mask = (psState.output1 ? 1 : 0) | (psState.output2 ? 2 : 0) | (psState.output3 ? 4 : 0);
   uint32_t mv   = g_target_mV;
   if (mv != seen_mv || mask != seen_mask) { seen_mv = mv; seen_mask = mask; seen_at = millis(); return; }
@@ -220,7 +219,7 @@ bool setVoltageMv(uint32_t mv) {
   g_target_mV   = mv;
   g_setpoint_mV = mv;
   psState.voltage1 = mv / 1000.0f;
-  if (changed && !g_sweeping) g_vctrl_state = 1;
+  if (changed) g_vctrl_state = 1;
   return true;
 }
 
@@ -235,7 +234,6 @@ bool apply_command(const String &action, uint8_t ch, float val, uint8_t src) {
   if (action == "toggle") {
     if (ch < 1 || ch > 3) return false;
     bool on = val >= 0.5f;
-    if (on && ch == 1 && g_sweeping) return false;   // the sweep owns output 1
     out_set(ch, on);
     lg(src, on ? LG_ON : LG_OFF, ch, 0);
     return true;
@@ -252,7 +250,6 @@ bool apply_command(const String &action, uint8_t ch, float val, uint8_t src) {
   }
   if (action == "cycle") {                 // off now, back on after val seconds (rail-checked)
     if (ch < 1 || ch > 3 || !(val >= 1.0f && val <= 3600.0f)) return false;
-    if (ch == 1 && g_sweeping) return false;
     out_set(ch, false);
     out_pend(ch, (uint32_t)lroundf(val * 1000.0f), src);
     lg(src, LG_CYCLE, ch, (int32_t)lroundf(val));
@@ -274,7 +271,7 @@ void out_boot() {
 
 // =============================================================================
 //   voltageControlTask — deterministic best-step voltage setter
-//   g_vctrl_state: 0=idle 1=settling 2=verifying 3=frozen 4=busy
+//   g_vctrl_state: 0=idle 1=settling 2=verifying 3=frozen
 //   Runs on core 0, priority 2. Web handlers return immediately.
 // =============================================================================
 // Heavily filtered: mean of 50 reads over ~200 ms (10 mains cycles @50 Hz) to
@@ -289,84 +286,11 @@ static uint32_t vctrl_sample() {
   return (uint32_t)((sum / 50) * VV_ADC_SCALE);
 }
 
-// Isotonic regression (Pool-Adjacent-Violators) — enforce Vout non-increasing
-// as step increases, pooling noisy violators. Cleans the swept map so lookups
-// land in the right neighbourhood even at low V, where per-step spacing
-// (~27 mV) is well under the ADC noise (~±150 mV) and raw samples are jumbled.
-static void cal_smooth_monotonic() {
-  int lo = 0;               while (lo < dpMaxSteps && g_cal_mv[lo] == 0) lo++;
-  int hi = dpMaxSteps - 1;  while (hi >= 0 && g_cal_mv[hi] == 0) hi--;
-  if (hi - lo < 3) return;
-  static float bval[128]; static int bcnt[128];
-  int nb = 0;
-  for (int i = lo; i <= hi; i++) {
-    bval[nb] = g_cal_mv[i]; bcnt[nb] = 1; nb++;
-    while (nb >= 2 && bval[nb - 1] > bval[nb - 2]) {       // non-increasing violation -> pool
-      float sum = bval[nb - 1] * bcnt[nb - 1] + bval[nb - 2] * bcnt[nb - 2];
-      bcnt[nb - 2] += bcnt[nb - 1];
-      bval[nb - 2]  = sum / bcnt[nb - 2];
-      nb--;
-    }
-  }
-  int idx = lo;
-  for (int b = 0; b < nb; b++)
-    for (int k = 0; k < bcnt[b]; k++) g_cal_mv[idx++] = (uint16_t)(bval[b] + 0.5f);
-}
 
-// Build the step->mV calibration map by sweeping the wiper.
-//
-// Output 1 is switched OFF for the whole sweep. All three ADC dividers tap the
-// regulator outputs BEFORE the P-FET switches (schematic net N$1; confirmed live:
-// CH3 switched off still reads 3.35 V), so the sweep measures an unloaded rail
-// and nothing downstream ever sees the ~2.5 -> 16.5 V ramp. (It used to force
-// output 1 ON — straight into whatever was attached — and save a loaded map.)
-//
-// Sweeps into a scratch map and only commits it if it looks like a real rail,
-// so a dead divider or a miswired board can never overwrite a good map.
-void run_cal_sweep() {
-  static uint16_t tmp[128];
-  bool was_on = psState.output1;
-  g_sweeping = true;
-  out_set(1, false);
-  g_vctrl_state = 4;                          // "busy" for the UI
-  lg(SRC_SYS, LG_SWEEP, 1, was_on ? 1 : 0);
-  Dbg.println("[Cal] sweep start (output 1 OFF)");
-  memset(tmp, 0, sizeof(tmp));
-  dpSetStep(dpMaxSteps - 1);                  // max R -> lowest V
-  vTaskDelay(pdMS_TO_TICKS(400));
-  bool ok = true;
-  uint32_t top = 0;
-  for (int s = dpMaxSteps - 1; s >= 0; s--) {
-    dpSetStep(s);
-    vTaskDelay(pdMS_TO_TICKS(120));           // settle (rising V is fast, no load)
-    uint32_t mv = (vctrl_sample() + vctrl_sample()) / 2;   // ~400 ms average for a cleaner map
-    tmp[s] = (mv > 65000u) ? 65000u : (uint16_t)mv;
-    if (mv > top) top = mv;
-    if (s == dpMaxSteps - 1 && mv < 1000) {   // not seeing the regulator at all
-      ok = false; break;
-    }
-    if (mv > 16500u) {                        // railed near Vin ceiling — fill rest & stop
-      for (int j = s - 1; j >= 0; j--) tmp[j] = tmp[s];
-      break;
-    }
-  }
-  if (ok && top < (uint32_t)tmp[dpMaxSteps - 1] + 3000u) ok = false;   // never rose: not a rail
-  dpSetStep(dpMaxSteps - 1);                  // park at lowest V; the task re-acquires the target
-  if (ok) {
-    memcpy(g_cal_mv, tmp, sizeof(g_cal_mv));
-    cal_smooth_monotonic();                   // isotonic clean-up before use/save
-    g_cal_valid = true;
-    cal_save();
-    Dbg.printf("[Cal] sweep done + saved: %u..%u mV\n", g_cal_mv[dpMaxSteps - 1], g_cal_mv[0]);
-  } else {
-    lg(SRC_SYS, LG_SWEEP_ABORT, 1, (int32_t)tmp[dpMaxSteps - 1]);
-    Dbg.printf("[Cal] sweep ABORTED, map unchanged (low=%u top=%lu mV)\n",
-               tmp[dpMaxSteps - 1], (unsigned long)top);
-  }
-  disp_reset(0);
-  g_vctrl_state = 0;
-  g_sweeping = false;
-  if (was_on) out_pend(1, 0, SRC_SYS);       // back on once re-acquired and checked
+// Load the fixed step->mV map (control_math.h). Call before the control task starts.
+void cal_init() {
+  cm_fixed_map(g_cal_mv);
+  g_cal_valid = true;
 }
 
 // Closest calibrated step to target that doesn't exceed the +300 mV ceiling.
@@ -378,11 +302,10 @@ void voltageControlTask(void* pvParameters) {
   // the pre-reboot voltage while status reported the boot default.
   uint32_t lastTarget  = 0;
   uint32_t settle_t    = 0;
-  uint8_t  state       = 0;   // 0=idle 1=settling 2=verifying 3=frozen 4=busy
+  uint8_t  state       = 0;   // 0=idle 1=settling 2=verifying 3=frozen
   bool     discharging = false;
 
   for (;;) {
-    if (g_cal_sweep_req) { g_cal_sweep_req = false; run_cal_sweep(); lastTarget = 0; state = 0; continue; }
 
     uint32_t target = g_target_mV;
 
@@ -432,7 +355,7 @@ void voltageControlTask(void* pvParameters) {
       // The map is NOT updated here any more. These readings are taken with
       // whatever load is attached, and the high-Z divider under-reads under
       // load; "self-healing" the map with them made the next setpoint land
-      // a full step high. The map changes only by sweep.
+      // a full step high. The map is fixed (control_math.h).
       int      s  = g_wiper_step;
       uint32_t mv = g_measured_mV;                    // sample from the top of this pass
       int32_t err = (int32_t)mv - (int32_t)target;

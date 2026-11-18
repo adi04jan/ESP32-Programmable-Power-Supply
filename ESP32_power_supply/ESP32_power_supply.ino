@@ -59,7 +59,7 @@ void setup() {
 
   // Load NVS settings first so we can seed WiFi credentials
   vb_load();
-  cal_load();   // restore the output-1 calibration map if one was saved
+  cal_init();   // fixed output-1 step->mV map (control_math.h)
   out_boot();   // log the reset; if restore is on, re-apply the pre-reboot setpoint + queue outputs
 
   // Control task AFTER the map and any restored setpoint are in place, so its

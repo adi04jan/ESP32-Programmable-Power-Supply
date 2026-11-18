@@ -1,9 +1,10 @@
-# Voltbench — Automation & Test Reference (firmware v3.1.0)
+# Voltbench — Automation & Test Reference (firmware v3.1.1)
 
 A self-contained guide for driving a Voltbench ESP32-C3 programmable power supply
 over its HTTP/WebSocket API — for automated testing, CI rigs, or another agent
-session. Written against firmware **3.1.0** (console protocol, errors, restore and
-cycle are new in 3.1.0 — older units answer differently).
+session. Written against firmware **3.1.1** (console protocol, errors, restore and
+cycle are new in 3.1.0; the fixed CH1 map replaced the calibration sweep in 3.1.1 —
+older units answer differently).
 
 ---
 
@@ -61,10 +62,8 @@ Auth column: **Y** = 401 without a valid token when `require_login` is on.
 | GET  | `/api/status` | Y | live telemetry (see §4) |
 | POST | `/api/control` | Y | form: `action`, `output`, `value` (see §5) |
 | POST | `/api/settings` | Y | **JSON body** — nested settings patch (see §6) |
-| POST | `/api/cal/sweep` | Y | start ~60 s calibration sweep (**output 1 switched OFF** during it; 409 if running) |
 | GET  | `/api/log` | Y | `{n, lines:[…]}` last 32 output/setpoint changes with source |
-| GET  | `/api/cal/status` | Y | `{valid, running, mv:[128]}` |
-| POST | `/api/cal/clear` | Y | erase calibration map |
+| GET  | `/api/cal/status` | Y | `{valid, fixed, mv:[128]}` — CH1's fixed step→mV map |
 | GET  | `/api/wifi/scan` | Y | `{scanning:true}` (202) then `{networks:[…]}` — **poll it** |
 | POST | `/api/wifi/connect` | Y | form `ssid`, `pass` (async; may 409 if busy) |
 | POST | `/api/wifi/forget` | Y | form `ssid` |
@@ -103,13 +102,11 @@ send `quiet 1` (stops the 1 Hz `[tel]` line) and your commands.
 |---|---|---|
 | `s` | `OK STAT out=1,1,0 set_mv=13500 rail1_mv=13420 rail2_mv=5010 rail3_mv=3300 ctl=frozen cal=1 pend=0 restore=1 up_s=123` | fixed format — parse this one |
 | `?` | `OK set=13500mV meas=… disp=… state=3 R=952ohm cal=1 out=110` | legacy fields kept for old scripts. `R=` is the pot wiper, `state=` the controller (3 = frozen) — **neither describes the load** |
-| `id` / `*idn?` | `OK ID voltbench fw=3.1.0 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
+| `id` / `*idn?` | `OK ID voltbench fw=3.1.1 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
 | `v13.5` · `v13500mV` | `OK set_mv=13500 out=…` | **setpoint only — never switches an output.** `ERR arg` for garbage, `ERR range` outside 2.5–16 V |
 | `o1 1` / `o2 0` / `o3 1` | `OK out=1,0,1` | switch one output (`o0`/`o1` still work for CH1) |
 | `off` | `OK out=0,0,0` | all outputs off |
 | `cycle <ch> <sec>` | `OK cycle ch=1 off_s=15 …` | off now, back on after `sec` (1–3600) **only if the rail checks out**; done by the firmware, so it survives the host dying. Any explicit switch command on that channel cancels it |
-| `m!` | `OK sweep started …` | ~60 s calibration sweep. **Output 1 is switched OFF** for it and back on afterwards if it was on. Bare `m` → `ERR confirm` |
-| `c` | `OK cal=1 sweeping=0` | |
 | `log?` | `> 123.456 usb set ch=1 val=13500` … `OK LOG n=N` | last 32 output/setpoint changes with source (`usb telnet http ws mqtt sys`) |
 | `quiet 0\|1` | `OK quiet=1` | suppress the periodic `[tel]` line (not persisted) |
 | `restore 0\|1` · `restore?` | `OK restore=1 …` | restore-after-reboot (see §8.7) |
@@ -133,9 +130,8 @@ load by the load, never by these numbers. There is **no current sensing**.
 - `voltage1/2/3` — measured volts **before each output switch** (non-zero when off; CH1
   reads low under load). CH1 is a median-of-5.
 - `set1` — CH1 commanded set-point.
-- `cal` — calibration map present.
-- `state` — controller state: **`idle` `settling` `verifying` `frozen` `busy`**
-  (`busy` = a calibration sweep is running).
+- `cal` — step→mV map loaded (always `true` since 3.1.1: the map is fixed in firmware).
+- `state` — controller state: **`idle` `settling` `verifying` `frozen`**.
 - `ts` — `millis()`; wraps every ~49 days (harmless).
 - **No** `current*` / `cc*` / `trip*` / `pid*` — that hardware/feature does not exist.
 
@@ -239,10 +235,9 @@ UI does exactly this so a half-dead socket never freezes the display.
 4. **`/api/ota/upload` reboots on success**, dropping the connection mid-request — your
    HTTP client will see a connection error / "context destroyed". That is **success**,
    not failure; confirm by polling `/api/info.fw` after ~10 s.
-5. **Calibration sweep (3.1.0): output 1 is switched OFF** for the ~60 s sweep — whatever
-   CH1 powers loses power, but never sees the ramp. It is switched back on afterwards (once
-   re-acquired and checked) if it was on. During the sweep `state == "busy"`, switching CH1
-   on is refused, and a new setpoint is applied after the sweep.
+5. **No calibration sweep since 3.1.1.** CH1 uses a fixed step→mV map fitted to this
+   board (`control_math.h`), so nothing ever ramps or interrupts output 1. `/api/cal/sweep`,
+   `/api/cal/clear` and the console `m!`/`c` commands are gone (404 / `ERR unknown`).
 6. **Reboot after any control** — none needed; changes are live. But `/api/reboot`,
    `/api/factory_reset`, OTA, and mdns-change **do** reboot; expect ~10–15 s downtime, and
    **every output drops**.

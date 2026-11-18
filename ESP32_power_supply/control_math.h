@@ -16,6 +16,24 @@
 
 static inline int cm_clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+// Fixed step->mV map for THIS board's output 1 (replaces the calibration sweep).
+// Fitted 2026-11-18 to two full sweeps (245 points): V = A + B/(step + C),
+// rms 103 mV = sweep noise, no region off in both sweeps, step 12 predicted
+// 13423 mV vs 13430 measured. Physically A ~ LM2596 Vref, C ~ wiper resistance.
+// Steps above the input rail (~18 V) are clamped there and are never selected
+// (VB_VMAX_MV 16 V). Rework the pot, the feedback resistor or VV_ADC_SCALE ->
+// re-measure and refit these three (the old sweep: git show aee725e).
+#define CM_FIX_A_MV 1225.1f
+#define CM_FIX_B    176744.0f
+#define CM_FIX_C    2.49f
+#define CM_RAIL_MV  18000u
+static inline void cm_fixed_map(uint16_t *map) {
+  for (int s = 0; s < CM_STEPS; s++) {
+    float v = CM_FIX_A_MV + CM_FIX_B / ((float)s + CM_FIX_C);
+    map[s] = v >= (float)CM_RAIL_MV ? (uint16_t)CM_RAIL_MV : (uint16_t)(v + 0.5f);
+  }
+}
+
 // Wiper step whose resistance is closest to r_ohms.
 static inline int cm_step_for_r(float r_ohms) {
   int s = (int)(((float)CM_STEPS * (r_ohms - (float)CM_WIPER_OHMS)) / (float)CM_RANGE_OHMS);

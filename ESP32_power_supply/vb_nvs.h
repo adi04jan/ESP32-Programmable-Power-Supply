@@ -1,7 +1,7 @@
 // =============================================================================
 //   vb_nvs.h — persistent settings (NVS namespace "voltbench").
 //
-//   One mutex around every vbPrefs.begin()/end() pair: cal_save() runs on the
+//   One mutex around every vbPrefs.begin()/end() pair: vb_save_outstate() runs on the
 //   control task while web handlers save settings on the AsyncTCP task.
 //
 //   A Preferences write is a 10-40 ms flash erase. Never call these from an
@@ -62,9 +62,6 @@ uint8_t vb_load_wifi_drop(uint32_t *uptime_s);   // 0 = nothing recorded
 // Last settled setpoint + output mask (keys "r_mv"/"r_out"), for restore-after-reboot.
 void vb_save_outstate(uint32_t mv, uint8_t mask);
 
-// Output-1 calibration map persistence (keys "calmap"/"calok").
-void cal_save();
-void cal_load();
 
 void vb_save_wifi_slot(uint8_t i, const String &ssid, const String &pass);
 bool vb_remember_wifi(const String &ssid, const String &pass);

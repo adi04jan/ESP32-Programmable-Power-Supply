@@ -13,7 +13,7 @@
 
 #include <Arduino.h>
 
-#define CURRENT_FIRMWARE_VERSION "3.1.0"
+#define CURRENT_FIRMWARE_VERSION "3.1.1"
 
 // Pull-OTA source: this repo's GitHub "latest release" assets. The device fetches
 // <base>version.txt, and if it is semver-NEWER than CURRENT_FIRMWARE_VERSION
@@ -30,7 +30,7 @@
 // DMM 2026-07-21: 5-point fit (5→14.8 V) gave pure gain error x0.9876, zero
 // offset — resistor tolerance. Re-derive if the divider is ever reworked:
 // slope of DMM-vs-reported over >=4 points, then VV_ADC_SCALE = 48 * slope.
-// Re-run the calibration sweep after changing this (map stores scaled mV).
+// Refit CM_FIX_* in control_math.h after changing this (the map is in scaled mV).
 #define VV_ADC_SCALE 47.40f
 
 #define VOLTAGE_READ_PIN_VV  0

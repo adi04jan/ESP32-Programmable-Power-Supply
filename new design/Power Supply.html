@@ -710,15 +710,11 @@ canvas#graph{display:block;width:100%;height:380px}
         <!-- CALIBRATION -->
         <div class="card">
           <h3>Calibration</h3>
-          <p class="desc">Sweeps CH1's regulator across all 128 wiper steps (~1 min) to build the step→voltage map. <strong>Output 1 is switched OFF for the sweep</strong> — the sense point is before the output switch, so nothing attached sees the ramp — and switched back on afterwards if it was on.</p>
+          <p class="desc">CH1 uses a fixed step→voltage map for its 128 pot steps, fitted to this board's measured curve and built into the firmware. There is nothing to run.</p>
           <div class="row"><div class="k"><span class="lbl">Map status</span></div><span class="badge" id="cal-badge">—</span></div>
           <div class="row">
             <div class="k"><span class="lbl">Restore outputs after reboot</span><span class="sub">Re-applies the last setpoint, checks the rail, then switches the saved outputs back on. Off = everything stays off after a reboot or OTA.</span></div>
             <label class="toggle"><input type="checkbox" id="opt-restore" aria-label="Restore outputs after reboot"><span class="track"></span></label>
-          </div>
-          <div class="row action">
-            <button class="btn" id="cal-clear">Clear map</button>
-            <button class="btn primary" id="cal-run">Run sweep</button>
           </div>
         </div>
         <!-- WEBSOCKET API HELP -->
@@ -943,9 +939,7 @@ const demo = (() => {
     if (p === "/api/ota/update" || p === "/api/ota/force") {
       return {ok:true, started:true};
     }
-    if (p === "/api/cal/status") return {running:false, valid:state.cal};
-    if (p === "/api/cal/sweep")  { state.cal = true;  return {ok:true}; }
-    if (p === "/api/cal/clear")  { state.cal = false; return {ok:true}; }
+    if (p === "/api/cal/status") return {valid:state.cal, fixed:true};
     if (p === "/api/reboot") return {ok:true};
     if (p === "/api/factory_reset" && opts.method==="POST") {
       localStorage.removeItem("ps_hist");
@@ -1343,7 +1337,7 @@ function syncChannelControls(s){
 let lastStatusAt = 0;
 function paintBadge(s){
   const b = $("#ctl-badge"); if (!b) return;
-  const st = s.state === "busy" ? "calibrating…" : (s.state || "—");
+  const st = s.state || "—";
   b.textContent = s.cal ? st : `${st} · uncalibrated`;
   b.className = "badge " + (s.state === "frozen" && s.cal ? "ok" : "warn");
 }
@@ -1666,7 +1660,7 @@ async function loadInfo(){
     $("#mqtt-user").value = m.user || "";
     $("#mqtt-topic").value = m.topic || "voltbench";
   }
-  // Keep the CH1 slider ceiling in sync with the calibrated vmax (updates ~10 s after a sweep)
+  // Keep the CH1 slider ceiling in sync with the device's vmax
   if (info.vmax){
     const s = $('.channel[data-ch="1"] [data-slider]');
     const t = $('.channel[data-ch="1"] [data-target]');
@@ -1969,7 +1963,7 @@ $("#reboot-btn").addEventListener("click", async ()=>{
   toast("Rebooting", info?.restore ? "Outputs will be restored once the rails check out." : "All outputs will be OFF after the reboot.", "warn");
 });
 $("#factory-btn").addEventListener("click", async ()=>{
-  if (!confirm("Factory reset erases Wi-Fi credentials, mDNS name, password, all settings AND the CH1 calibration map (re-run the sweep afterwards). Continue?")) return;
+  if (!confirm("Factory reset erases Wi-Fi credentials, mDNS name, password, and all settings. Continue?")) return;
   try { await api("/api/factory_reset", {method:"POST"}); } catch(_){ return toast("Reset failed","Device unreachable.","err"); }
   toast("Factory reset","Device is reverting to defaults.","warn");
 });
@@ -2016,21 +2010,9 @@ async function refreshCal(){
   let r; try { r = await api("/api/cal/status"); } catch(e){ return; }
   const b = $("#cal-badge");
   calMap = (r.valid && Array.isArray(r.mv)) ? r.mv : null;
-  if (r.running){ b.textContent = "SWEEPING…"; b.className = "badge warn"; setTimeout(refreshCal, 2000); }
-  else if (r.valid){ b.textContent = "CALIBRATED"; b.className = "badge ok"; }
-  else { b.textContent = "NOT CALIBRATED"; b.className = "badge warn"; }
+  if (r.valid){ b.textContent = r.fixed ? "FIXED · 128 STEPS" : "CALIBRATED"; b.className = "badge ok"; }
+  else { b.textContent = "NO MAP"; b.className = "badge warn"; }
 }
-$("#cal-run").addEventListener("click", async ()=>{
-  if (!confirm("Run the ~1 min calibration sweep? Output 1 is switched OFF while it runs (anything powered from CH1 loses power) and switched back on afterwards if it was on.")) return;
-  let r; try { r = await api("/api/cal/sweep", {method:"POST"}); } catch(_){ return toast("Failed","Device unreachable.","err"); }
-  if (r.ok){ toast("Calibration started","Output 1 is off while the regulator sweeps — watch the map status."); refreshCal(); }
-  else toast("Busy", r.err || "Controller is busy", "err");
-});
-$("#cal-clear").addEventListener("click", async ()=>{
-  if (!confirm("Clear the calibration map? Set-points fall back to the formula until you re-run the sweep.")) return;
-  await api("/api/cal/clear", {method:"POST"});
-  refreshCal(); toast("Cleared","Calibration map erased.");
-});
 
 /* Device log stream */
 let logWs = null;

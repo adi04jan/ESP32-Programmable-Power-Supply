@@ -12,5 +12,4 @@ volatile uint32_t g_3v3_mV      = 0;
 
 uint16_t          g_cal_mv[128]   = {0};
 volatile bool     g_cal_valid     = false;
-volatile bool     g_cal_sweep_req = false;
 volatile uint32_t g_display_mV    = 0;

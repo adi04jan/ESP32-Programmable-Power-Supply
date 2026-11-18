@@ -19,11 +19,11 @@ Designed and developed by **Aditya Biswas**.
 ### Power Outputs
 | Channel | Rail | Range | Regulation |
 |---------|------|-------|------------|
-| CH1 | LM2596-ADJ (variable) | 2.5 V – 15 V | map-based deadbeat control + on-device calibration sweep |
+| CH1 | LM2596-ADJ (variable) | 2.5 V – 16 V | map-based deadbeat control (fixed step→voltage map) |
 | CH2 | Mini360 (fixed 5 V) | 5.0 V | Passthrough (monitor only) |
 | CH3 | LM1117-3.3 (LDO, fixed) | 3.3 V | Passthrough (monitor only) |
 
-### Accuracy (measured, after calibration sweep)
+### Accuracy (measured with an earlier swept map)
 | Setpoint | Measured | Error |
 |----------|----------|-------|
 | 3.3 V | 3.22 V | −80 mV (2.4%) |
@@ -32,13 +32,13 @@ Designed and developed by **Aditya Biswas**.
 | 12.0 V | 12.29 V | +290 mV (2.4%) |
 | 15.0 V | 15.55 V | +550 mV (3.7%) |
 
-> Accuracy is limited by wiper-step quantization (~27 mV/step at low voltages, up to ~1 V/step near the ceiling). Run Settings → Calibration → Run sweep once after assembly (CH1 unloaded).
+> Accuracy is limited by wiper-step quantization (~27 mV/step at low voltages, up to ~1 V/step near the ceiling).
 
 ### Web UI
 - **Dashboard** — live voltage at 4 Hz, per-channel enable toggles, voltage slider, preset chips (right-click to delete, ＋ to save current), delta indicator, All Off button
 - **History** — bezier-smoothed time-series graph with SMA noise reduction, channel filters, event markers (output on/off), adjustable time window (1 / 5 / 15 min or all stored samples — the browser keeps the last 4000)
 - **Settings** — mDNS hostname, security/login, Wi-Fi management (scan/connect/forget, stores up to 4 SSIDs), OTA update, experimental flags (dial mode, EMA smoothing, fast poll), MQTT bridge
-- **Calibration card** — run/clear the CH1 calibration sweep and see whether a valid map is loaded
+- **Calibration card** — shows that CH1's fixed map is loaded; hosts the restore-after-reboot switch
 - **Device log pane** — live firmware log streamed over a view-only WebSocket (`/logws`)
 - **Web-upload OTA** — flash a `.bin` straight from the browser, with real upload/flash progress
 
@@ -47,11 +47,11 @@ Designed and developed by **Aditya Biswas**.
 - **REST API** — full control and configuration via `/api/*` endpoints
 - **mDNS** — reachable at `http://voltbench.local/` on any mDNS-capable host (Windows, macOS, Linux, iOS)
 - **Captive portal** — automatically falls back to AP mode (`VoltbenchAP`) when no saved Wi-Fi connects; re-tries every 30 s
-- **Telnet console** (`:23`) and USB serial console — single-letter commands: `v<volts>` set CH1, `o1`/`o0` output on/off, `m` run calibration sweep, `c` cal status, `?` full state dump
+- **Telnet console** (`:23`) and USB serial console — single-letter commands: `v<volts>` set CH1, `o1`/`o0` output on/off, `s` status, `?` full state dump (full list: `AUTOMATION.md` §3a)
 
 ### Management
 - **OTA update** — pulls firmware from this repo's GitHub "latest release" assets on demand or auto-check on boot; web-upload OTA as a second, USB-free path
-- **NVS persistence** — all settings, the CH1 calibration map, and Wi-Fi credentials survive power cycles and OTA updates
+- **NVS persistence** — all settings and Wi-Fi credentials survive power cycles and OTA updates
 - **MQTT bridge** — publishes 1 Hz telemetry; subscribes to control topics
 - **Factory reset** — wipes all NVS from Settings → Factory Reset
 - **Token auth** — optional bearer-token login (stored in `sessionStorage`, persists across reboots)
@@ -205,13 +205,9 @@ Write-Host "Done: $($bytes.Length) -> $($gzBytes.Length) bytes"
 
 ### Calibration
 
-On first flash CH1 has no calibration map, so the deadbeat controller falls back to a coarse built-in estimate. For rated accuracy, run the sweep once:
+There is nothing to run. The pot has 128 fixed steps, so CH1 uses a fixed step→millivolt map built into the firmware: `cm_fixed_map()` in `control_math.h`, `V = A + B/(step + C)`. The three constants were fitted to two full sweeps of this board (rms 103 mV, which is the sweep noise; step 12 predicted 13 423 mV vs 13 430 mV measured). That beats storing a sweep, whose ADC noise made flat runs in the map and let some setpoints land ~0.6 V high.
 
-1. **Disconnect any load from CH1** — the sweep drives the output across its full range (~2.5 V → ceiling) and needs the rail unloaded to read clean.
-2. In **Settings → Calibration**, click **Run sweep**. It steps the MCP4017 through all 128 positions, sampling each one — takes about a minute. The busy state is reported as `"busy"` in `/api/status` and rejects a second sweep request while running.
-3. The resulting step→millivolt map is smoothed to be monotonic, marked valid, and persisted to NVS — it survives reboots and OTA updates (NVS is a separate flash partition the OTA slot swap never touches).
-
-Re-run the sweep only if the hardware changes (different MCP4017, feedback resistor, or LM2596 module). Use **Clear** to wipe the map and fall back to the coarse estimate.
+If the hardware changes (different MCP4017, feedback resistor, LM2596 module, or `VV_ADC_SCALE`), re-measure the curve and refit `CM_FIX_A_MV` / `CM_FIX_B` / `CM_FIX_C`. The old on-device sweep is in git (`git show aee725e:ESP32_power_supply/vb_control.cpp`, `run_cal_sweep`).
 
 ### Presets
 
@@ -243,9 +239,7 @@ All responses are JSON. When `require_login` is enabled, include header `X-Auth:
 | `POST` | `/api/ota/update` | Pull from GitHub if newer |
 | `POST` | `/api/ota/force` | Pull from GitHub unconditionally |
 | `POST` | `/api/ota/upload` | Multipart `.bin` upload → flashes the inactive OTA slot, reboots on success |
-| `POST` | `/api/cal/sweep` | Start the CH1 calibration sweep (`409` if the controller is already busy) |
-| `GET` | `/api/cal/status` | `{valid, running, mv:[128 values]}` |
-| `POST` | `/api/cal/clear` | Wipe the calibration map |
+| `GET` | `/api/cal/status` | `{valid, fixed, mv:[128 values]}` — CH1's fixed step→mV map |
 | `GET` | `/api/mqtt/test` | Test broker connectivity |
 | `POST` | `/api/reboot` | Restart device |
 | `POST` | `/api/factory_reset` | Wipe NVS |
@@ -269,7 +263,7 @@ action=all_off
 }
 ```
 
-`state`: `idle` | `settling` | `verifying` | `frozen` | `busy` (`busy` = calibration sweep in progress). `voltage1` is the median-of-5 display value; `cal` reports whether a valid calibration map is loaded.
+`state`: `idle` | `settling` | `verifying` | `frozen`. `voltage1` is the median-of-5 display value; `cal` reports that the step→voltage map is loaded (always true: it is fixed in firmware).
 
 `/api/info` unauthenticated returns `{fw, mdns, require_login, captive}`; with a valid token it adds `ip, mac, ssid, rssi, uptime, ota:{auto}, exp:{fast,smooth,dial}, mqtt:{…}, saved_ssids, vmax`.
 
@@ -340,8 +334,8 @@ Either path rejects a second update while one is already running (logged as `bus
 │  │  deadbeat state      │  g_measured_mV          │ │
 │  │  machine: idle →     │  g_display_mV  ────────►│ │
 │  │  settling → verify   │  g_5v_mV / g_3v3_mV     │ │
-│  │  → frozen (or busy   │  g_vctrl_state          │ │
-│  │  during cal sweep)   │  g_cal_mv[128] / valid  │ │
+│  │  → frozen            │  g_vctrl_state          │ │
+│  │  (fixed step map)    │  g_cal_mv[128] / valid  │ │
 │  │  ADC reads (all 3    │                         │ │
 │  │  rails) + I2C pot    │                         │ │
 │  └──────────────────────┘                         │ │
@@ -367,7 +361,7 @@ Either path rejects a second update while one is already running (logged as `bus
 
 **Key design decisions:**
 - `voltageControlTask` owns ALL ADC sampling (all three rails) and the I2C pot; web handlers read atomically-written globals only. Status reads use `g_display_mV`, a median-of-5 window snapped on freeze for a calm steady-state number.
-- The controller is a calibration-map deadbeat, not a feedback loop: predict the wiper step from `g_cal_mv[]`, wait 300 ms to settle, take one ~200 ms filtered verify sample, apply at most one ±1-step correction, then freeze (`g_vctrl_state`: idle → settling → verifying → frozen). No PID, no hunting, no per-cycle recomputation — settled in under a second across the full range. Without a calibration map it falls back to a coarse built-in R↔step estimate.
+- The controller is a calibration-map deadbeat, not a feedback loop: predict the wiper step from `g_cal_mv[]`, wait 300 ms to settle, take one ~200 ms filtered verify sample, apply at most one ±1-step correction, then freeze (`g_vctrl_state`: idle → settling → verifying → frozen). No PID, no hunting, no per-cycle recomputation — settled in under a second across the full range. `g_cal_mv[]` is the fixed map from `cm_fixed_map()`, filled at boot.
 - The web UI is a single gzip-compressed HTML file (~23 KB) served directly from PROGMEM — no filesystem partition required.
 
 ---
@@ -378,7 +372,7 @@ Either path rejects a second update while one is already running (logged as `bus
 |---------|-------|-----|
 | `voltbench.local` not resolving | mDNS client issue | Try IP directly; Android needs an mDNS helper app |
 | Voltage reading is non-zero with output OFF | Expected — the sense divider sits *before* the output switch, so it reads the regulator | Use the ON/OFF state, not the reading, to tell if an output is live |
-| CH1 settles far from setpoint | No calibration map — coarse fallback estimate in use | Run Settings → Calibration → Run sweep (CH1 unloaded) |
+| CH1 settles far from setpoint | Hardware changed since the fixed map was fitted, or a heavy load (the CH1 sense reads low under load) | Check the unloaded rail with a DMM; refit `CM_FIX_*` in `control_math.h` if the board was reworked |
 | OTA "check" never returns `newer` | No release published yet, or `version.txt`/`.bin` missing from the GitHub release | Confirm the tag's release has both assets attached |
 | `MCP4017 not found!` at boot | I2C wiring | Check SDA/SCL and pull-up resistors (4.7 KΩ to 3.3 V) |
 | Sketch too large to upload | Wrong partition scheme | Select Custom and point to `partitions.csv` |

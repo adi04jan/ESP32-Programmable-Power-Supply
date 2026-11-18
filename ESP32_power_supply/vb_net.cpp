@@ -327,7 +327,7 @@ void vb_register_routes() {
       d["reset"]         = vb_reset_reason();
       d["restore"]       = vb.restore;
       // WiFi post-mortem. Served from RAM only — an NVS read here would take
-      // g_nvs_mux on the AsyncTCP task and stall the stack behind a cal_save().
+      // g_nvs_mux on the AsyncTCP task and stall the stack behind an NVS write.
       auto wd = d["wifi_drop"].to<JsonObject>();
         wd["n"]      = g_wifi_drops;         // drops seen this boot
         wd["reason"] = g_wifi_last_reason;   // last reason this boot (0 = none)
@@ -345,13 +345,7 @@ void vb_register_routes() {
       auto saved = d["saved_ssids"].to<JsonArray>();
       for (uint8_t i = 0; i < VBSettings::MAX_SSID; i++)
         if (!vb.ssid[i].isEmpty()) saved.add(vb.ssid[i]);
-      uint32_t vmax_mV = 16000;
-      if (g_cal_valid) {
-        uint32_t top = 0;
-        for (int s = 0; s < 128; s++) if (g_cal_mv[s] > top) top = g_cal_mv[s];
-        if (top > 2500 && top < 16000) vmax_mV = top;
-      }
-      d["vmax"] = vmax_mV / 1000.0f;
+      d["vmax"] = VB_VMAX_MV / 1000.0f;
     }
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
@@ -420,16 +414,6 @@ void vb_register_routes() {
       });
   server.addHandler(settingsHandler);
 
-  // Output-1 calibration: build the step->mV map by sweeping the wiper. Output 1
-  // is switched OFF for the ~60 s sweep (the ADC reads the rail before the
-  // switch) and switched back on afterwards if it was on.
-  server.on("/api/cal/sweep", HTTP_POST, [](AsyncWebServerRequest *req) {
-    VB_REQUIRE_AUTH(req);
-    if (g_sweeping || g_cal_sweep_req) { req->send(409, "application/json", "{\"ok\":false,\"err\":\"busy\"}"); return; }
-    g_cal_sweep_req = true;
-    req->send(200, "application/json", "{\"ok\":true,\"msg\":\"calibration sweep started (output 1 off ~60 s)\"}");
-  });
-
   // Change log: last 32 output/setpoint changes with their source.
   server.on("/api/log", HTTP_GET, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
@@ -448,18 +432,11 @@ void vb_register_routes() {
     VB_REQUIRE_AUTH(req);
     JsonDocument d;
     d["valid"]   = g_cal_valid;
-    d["running"] = g_sweeping || g_cal_sweep_req;
+    d["fixed"]   = true;               // compiled-in map, no sweep (control_math.h)
     auto a = d["mv"].to<JsonArray>();
     for (int i = 0; i < 128; i++) a.add(g_cal_mv[i]);
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
-  });
-  server.on("/api/cal/clear", HTTP_POST, [](AsyncWebServerRequest *req) {
-    VB_REQUIRE_AUTH(req);
-    for (int i = 0; i < 128; i++) g_cal_mv[i] = 0;
-    g_cal_valid = false;
-    cal_save();
-    req->send(200, "application/json", "{\"ok\":true}");
   });
 
   // Wi-Fi scan — results come from a dedicated FreeRTOS task (blocking scan).
