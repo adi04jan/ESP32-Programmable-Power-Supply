@@ -9,8 +9,9 @@
 #pragma once
 #include "vb_config.h"
 
-// Execute one bench-console command, replying on `out`. Shared by USB + telnet.
-void console_exec(const String &lineIn, Print &out);
+// Execute one bench-console command, replying on `out` with exactly one line
+// starting "OK" or "ERR <code>". Shared by USB + telnet; src is a VbSrc.
+void console_exec(const String &lineIn, Print &out, uint8_t src);
 
 // Start the telnet server (:23). Call from setup(), after WiFi is up.
 void vb_console_begin();
