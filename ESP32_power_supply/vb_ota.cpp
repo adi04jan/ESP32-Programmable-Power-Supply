@@ -1,6 +1,7 @@
 #include "vb_ota.h"
 #include "vb_debug.h"
 #include "vb_nvs.h"          // vb.ota_ssl / vb.ota_url for the tasked wrapper
+#include "vb_proto.h"        // vp_semver_newer
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
@@ -34,7 +35,11 @@ void perform_ota(bool force, bool verify_ssl, const String &ota_url) {
 
   Dbg.printf("OTA: current=%s latest=%s\n", CURRENT_FIRMWARE_VERSION, latest.c_str());
   if (latest.isEmpty()) { Dbg.println("OTA: empty version, abort"); return; }
-  if (!force && latest == CURRENT_FIRMWARE_VERSION) { Dbg.println("OTA: already up-to-date"); return; }
+  // Semver-NEWER only. The old `!=` test treated an OLDER release as an update,
+  // so a device running ahead of GitHub's latest downgraded itself on boot.
+  if (!force && !vp_semver_newer(latest.c_str(), CURRENT_FIRMWARE_VERSION)) {
+    Dbg.println("OTA: no newer release"); return;
+  }
 
   // --- download + flash firmware_<latest>.bin ---
   String firmware_url = ota_url + "firmware_" + latest + ".bin";
@@ -67,5 +72,5 @@ void perform_ota_tasked(bool force) {
   if (ota_busy) { Dbg.println("OTA: busy — request ignored"); return; }
   ota_busy = true;
   ota_force_flag = force;
-  xTaskCreatePinnedToCore(ota_task_fn, "otaTask", 16384, NULL, 5, NULL, 0);
+  xTaskCreatePinnedToCore(ota_task_fn, "otaTask", 16384, NULL, 1, NULL, 0);   // background work: lowest prio
 }

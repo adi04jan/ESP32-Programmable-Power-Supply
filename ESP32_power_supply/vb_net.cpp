@@ -11,6 +11,7 @@
 #include "vb_debug.h"
 #include "vb_ota.h"
 #include "web_page.h"        // index_html_gz, index_html_gz_len
+#include "vb_proto.h"        // vp_semver_newer / vp_parse_mv (host-tested)
 
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
@@ -131,6 +132,17 @@ bool vb_authed(AsyncWebServerRequest *req) {
 }
 #define VB_REQUIRE_AUTH(req) do { if (!vb_authed(req)) { req->send(401, "application/json", "{\"err\":\"auth\"}"); return; } } while (0)
 
+// "1"/"on"/"true" -> 1, "0"/"off"/"false" -> 0, a decimal -> its value, else NAN
+// (which apply_command rejects). The old toFloat() turned garbage into 0, and
+// "on"/"true" therefore switched an output OFF.
+static float vb_val_from_str(String v) {
+  v.trim(); v.toLowerCase();
+  if (v == "on"  || v == "true")  return 1.0f;
+  if (v == "off" || v == "false") return 0.0f;
+  uint32_t mv;
+  return vp_parse_mv(v.c_str(), &mv) ? mv / 1000.0f : NAN;
+}
+
 // =============================================================================
 //   WebSocket + telemetry broadcast
 // =============================================================================
@@ -147,8 +159,7 @@ void vb_fill_status(JsonDocument &d) {
   d["voltage3"] = g_3v3_mV / 1000.0f;
   d["set1"]     = g_setpoint_mV / 1000.0f;
   d["ts"]       = (uint64_t)millis();
-  static const char* const STATE_STR[] = {"idle","settling","verifying","frozen","busy"};
-  d["state"] = STATE_STR[min((uint8_t)4, (uint8_t)g_vctrl_state)];
+  d["state"]    = vb_ctl_name(g_vctrl_state);
 }
 
 uint32_t vb_last_push = 0;
@@ -185,15 +196,16 @@ void vb_on_ws_event(AsyncWebSocket *srv, AsyncWebSocketClient *c,
   String act = action;
   int    output = doc["output"] | 0;
   if (output < 0 || output > 3) output = 0;   // reject out-of-range before narrowing to uint8_t
-  float  value  = doc["value"]  | 0.0f;
-
-  float tval = value;
-  if (act == "toggle")
-    tval = doc["value"].is<bool>() ? (doc["value"].as<bool>() ? 1.0f : 0.0f) : value;
-  apply_command(act, (uint8_t)output, tval);
+  JsonVariant jv = doc["value"];
+  float value = jv.is<bool>()        ? (jv.as<bool>() ? 1.0f : 0.0f)
+              : jv.is<const char*>() ? vb_val_from_str(jv.as<const char*>())
+              : jv.isNull()          ? 0.0f
+              :                        jv.as<float>();
+  bool ok = apply_command(act, (uint8_t)output, value, SRC_WS);
 
   JsonDocument resp;
   vb_fill_status(resp);
+  if (!ok) resp["err"] = "rejected";    // unknown action, bad channel, or value out of range
   String out; serializeJson(resp, out);
   c->text(out);
 }
@@ -212,12 +224,20 @@ void vb_mqtt_cmd(char *topic, byte *payload, unsigned int len) {
   String base = vb.mqtt_topic + "/cmd/";
   if (!t.startsWith(base)) return;
   String tail = t.substring(base.length());
-  int slash = tail.indexOf('/');
-  if (slash < 0) return;
-  uint8_t ch = (uint8_t)tail.substring(2, slash).toInt();
-  String  fn = tail.substring(slash + 1);
-  if (fn == "output")       apply_command("toggle", ch, (p == "on" || p == "1") ? 1.0f : 0.0f);
-  else if (fn == "voltage") apply_command("set_voltage", ch, p.toFloat());
+  bool ok;
+  if (tail == "all_off") ok = apply_command("all_off", 0, 0, SRC_MQTT);
+  else {
+    int slash = tail.indexOf('/');
+    if (slash < 0) return;
+    uint8_t ch = (uint8_t)tail.substring(2, slash).toInt();
+    String  fn = tail.substring(slash + 1);
+    float   v  = vb_val_from_str(p);
+    if      (fn == "output")  ok = apply_command("toggle",      ch, v, SRC_MQTT);
+    else if (fn == "voltage") ok = apply_command("set_voltage", ch, v, SRC_MQTT);
+    else if (fn == "cycle")   ok = apply_command("cycle",       ch, v, SRC_MQTT);
+    else ok = false;
+  }
+  if (!ok) Dbg.printf("[mqtt] rejected %s = '%s'\n", t.c_str(), p.c_str());
 }
 
 void vb_mqtt_setup() {
@@ -231,12 +251,19 @@ void vb_mqtt_setup() {
 void vb_mqtt_loop() {
   if (!vb.mqtt_en || vb.mqtt_host.isEmpty() || vb_in_captive) return;
   if (!vb_mqtt.connected()) {
-    if (millis() - vb_last_mqtt < 5000) return;
+    // Each connect attempt blocks loop() up to the socket timeout (~2 s), which
+    // stalls the USB console, telnet and WS pushes. Back off to once a minute
+    // while the broker is unreachable; retry quickly only after a live link drops.
+    static uint32_t backoff = 5000;
+    if (millis() - vb_last_mqtt < backoff) return;
     vb_last_mqtt = millis();
-    String cid = "voltbench-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-    bool ok = vb.mqtt_user.isEmpty()
-      ? vb_mqtt.connect(cid.c_str())
-      : vb_mqtt.connect(cid.c_str(), vb.mqtt_user.c_str(), vb.mqtt_pass.c_str());
+    String cid  = "voltbench-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    String will = vb.mqtt_topic + "/status";
+    bool ok = vb_mqtt.connect(cid.c_str(),
+                              vb.mqtt_user.isEmpty() ? nullptr : vb.mqtt_user.c_str(),
+                              vb.mqtt_user.isEmpty() ? nullptr : vb.mqtt_pass.c_str(),
+                              will.c_str(), 0, true, "offline");   // LWT: broker marks us offline
+    backoff = ok ? 5000 : 60000;
     if (ok) {
       vb_mqtt.subscribe((vb.mqtt_topic + "/cmd/#").c_str());
       vb_mqtt.publish ((vb.mqtt_topic + "/status").c_str(), "online", true);
@@ -297,6 +324,8 @@ void vb_register_routes() {
       d["ssid"]          = WiFi.SSID();
       d["rssi"]          = WiFi.RSSI();
       d["uptime"]        = millis() / 1000;
+      d["reset"]         = vb_reset_reason();
+      d["restore"]       = vb.restore;
       // WiFi post-mortem. Served from RAM only — an NVS read here would take
       // g_nvs_mux on the AsyncTCP task and stall the stack behind a cal_save().
       auto wd = d["wifi_drop"].to<JsonObject>();
@@ -345,11 +374,15 @@ void vb_register_routes() {
   // Control
   server.on("/api/control", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
-    String  action = req->hasParam("action", true) ? req->getParam("action", true)->value() : "";
-    uint8_t out    = req->hasParam("output", true) ? req->getParam("output", true)->value().toInt() : 0;
-    float   val    = req->hasParam("value",  true) ? req->getParam("value",  true)->value().toFloat() : 0;
-    apply_command(action, out, action == "toggle" ? (val == 1.0f ? 1.0f : 0.0f) : val);
-    req->send(200, "application/json", "{\"ok\":true}");
+    String action = req->hasParam("action", true) ? req->getParam("action", true)->value() : "";
+    long   out    = req->hasParam("output", true) ? req->getParam("output", true)->value().toInt() : 0;
+    float  val    = req->hasParam("value",  true) ? vb_val_from_str(req->getParam("value", true)->value()) : 0.0f;
+    if (out < 0 || out > 3) out = 255;           // never let 257 narrow to channel 1
+    if (apply_command(action, (uint8_t)out, val, SRC_HTTP))
+      req->send(200, "application/json", "{\"ok\":true}");
+    else
+      req->send(400, "application/json",
+        "{\"ok\":false,\"err\":\"rejected: unknown action, bad output, or value out of range (set_voltage 2.5-16 V)\"}");
   });
 
   // Settings (JSON body)
@@ -361,6 +394,7 @@ void vb_register_routes() {
         if (s["mdns"].is<const char*>())     vb.mdns          = s["mdns"].as<String>();
         if (s["require_login"].is<bool>())   vb.require_login = s["require_login"];
         if (s["password"].is<const char*>()) vb.password      = s["password"].as<String>();
+        if (s["restore"].is<bool>())         vb.restore       = s["restore"];
         if (s["ota"].is<JsonObject>()) {
           JsonObject o = s["ota"];
           if (o["auto"].is<bool>())       vb.ota_auto = o["auto"];
@@ -386,19 +420,35 @@ void vb_register_routes() {
       });
   server.addHandler(settingsHandler);
 
-  // Output-1 calibration: build the step->mV map by sweeping the wiper.
-  // WARNING: drives output 1 across its full range — run with output 1 unloaded.
+  // Output-1 calibration: build the step->mV map by sweeping the wiper. Output 1
+  // is switched OFF for the ~60 s sweep (the ADC reads the rail before the
+  // switch) and switched back on afterwards if it was on.
   server.on("/api/cal/sweep", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
-    if (g_vctrl_state == 4) { req->send(409, "application/json", "{\"err\":\"busy\"}"); return; }
+    if (g_sweeping || g_cal_sweep_req) { req->send(409, "application/json", "{\"ok\":false,\"err\":\"busy\"}"); return; }
     g_cal_sweep_req = true;
-    req->send(200, "application/json", "{\"ok\":true,\"msg\":\"calibration sweep started\"}");
+    req->send(200, "application/json", "{\"ok\":true,\"msg\":\"calibration sweep started (output 1 off ~60 s)\"}");
+  });
+
+  // Change log: last 32 output/setpoint changes with their source.
+  server.on("/api/log", HTTP_GET, [](AsyncWebServerRequest *req) {
+    VB_REQUIRE_AUTH(req);
+    JsonDocument d;
+    auto a = d["lines"].to<JsonArray>();
+    char buf[96];
+    int n = vb_log_count();
+    for (int i = 0; i < n; i++) if (vb_log_line(i, buf, sizeof(buf))) a.add(buf);
+    d["n"] = n;
+    String out; serializeJson(d, out);
+    AsyncWebServerResponse *res = req->beginResponse(200, "application/json", out);
+    res->addHeader("Cache-Control", "no-store");
+    req->send(res);
   });
   server.on("/api/cal/status", HTTP_GET, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
     JsonDocument d;
     d["valid"]   = g_cal_valid;
-    d["running"] = (g_vctrl_state == 4);
+    d["running"] = g_sweeping || g_cal_sweep_req;
     auto a = d["mv"].to<JsonArray>();
     for (int i = 0; i < 128; i++) a.add(g_cal_mv[i]);
     String out; serializeJson(d, out);
@@ -498,24 +548,29 @@ void vb_register_routes() {
         ota_checked_at = millis();
         ota_busy       = false;
         vTaskDelete(NULL);
-      }, "otaChk", 16384, NULL, 5, NULL, 0);
+      }, "otaChk", 16384, NULL, 1, NULL, 0);
     }
     if (ota_busy) { req->send(202, "application/json", "{\"checking\":true}"); return; }
     JsonDocument d;
     d["current"] = CURRENT_FIRMWARE_VERSION;
     d["latest"]  = ota_latest.length() ? ota_latest : "unknown";
-    d["newer"]   = ota_latest.length() && ota_latest != CURRENT_FIRMWARE_VERSION;
+    d["newer"]   = vp_semver_newer(ota_latest.c_str(), CURRENT_FIRMWARE_VERSION);
     String out; serializeJson(d, out);
     req->send(200, "application/json", out);
   });
   server.on("/api/ota/update", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
+    if (ota_busy) { req->send(409, "application/json", "{\"ok\":false,\"err\":\"busy\"}"); return; }
+    if (ota_latest.length() && !vp_semver_newer(ota_latest.c_str(), CURRENT_FIRMWARE_VERSION)) {
+      req->send(200, "application/json", "{\"ok\":false,\"err\":\"up-to-date\"}"); return;
+    }
     req->send(200, "application/json", "{\"ok\":true,\"msg\":\"checking GitHub\"}");
     extern void perform_ota_tasked(bool);
     perform_ota_tasked(false);            // only update if version.txt is newer
   });
   server.on("/api/ota/force", HTTP_POST, [](AsyncWebServerRequest *req) {
     VB_REQUIRE_AUTH(req);
+    if (ota_busy) { req->send(409, "application/json", "{\"ok\":false,\"err\":\"busy\"}"); return; }
     req->send(200, "application/json", "{\"ok\":true,\"msg\":\"forcing re-flash from GitHub\"}");
     extern void perform_ota_tasked(bool);
     perform_ota_tasked(true);             // re-download even if same version
@@ -528,8 +583,10 @@ void vb_register_routes() {
       req->send(200, "application/json", "{\"ok\":false,\"err\":\"no broker host configured\"}");
       return;
     }
+    // ponytail: still a blocking connect on the AsyncTCP task, capped at 1 s;
+    // move to a 202 + task (like /api/ota/check) if a slow broker ever bites.
     WiFiClient c;
-    bool ok = c.connect(vb.mqtt_host.c_str(), vb.mqtt_port);
+    bool ok = c.connect(vb.mqtt_host.c_str(), vb.mqtt_port, 1000);
     c.stop();
     req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"connect failed\"}");
   });
@@ -557,8 +614,11 @@ void vb_register_routes() {
   server.on("/api/ota/upload", HTTP_POST,
     [](AsyncWebServerRequest *req) {
       if (!vb_authed(req)) { req->send(401, "application/json", "{\"err\":\"auth\"}"); return; }
+      // _tempObject marks the request that owns the Update session (freed by the
+      // request's destructor). A rejected concurrent upload must not touch it.
+      if (!req->_tempObject) { req->send(409, "application/json", "{\"ok\":false,\"err\":\"busy\"}"); return; }
       bool ok = Update.isFinished() && !Update.hasError();
-      if (!ok) ota_busy = false;
+      if (!ok) { if (Update.isRunning()) Update.abort(); ota_busy = false; }
       AsyncWebServerResponse *res = req->beginResponse(ok ? 200 : 500, "application/json",
         ok ? "{\"ok\":true,\"msg\":\"flashed, rebooting\"}" : "{\"ok\":false,\"err\":\"update failed\"}");
       res->addHeader("Connection", "close");
@@ -566,15 +626,25 @@ void vb_register_routes() {
       if (ok) { delay(300); ESP.restart(); }
     },
     [](AsyncWebServerRequest *req, String fn, size_t index, uint8_t *data, size_t len, bool final) {
+      static uint32_t last_chunk = 0;
       if (!vb_authed(req)) return;                       // ignore unauthenticated uploads
       if (index == 0) {
-        // ponytail: a client that vanishes mid-upload leaves ota_busy set until
-        // reboot — acceptable ceiling; upgrade with a watchdog timeout if it bites.
-        if (ota_busy && !Update.isRunning()) { Dbg.println("[OTA] busy — upload rejected"); return; }
+        // A client that vanished mid-upload leaves a half-written session; abort
+        // it once it has been idle 10 s instead of blocking every later upload.
+        if (Update.isRunning() && millis() - last_chunk > 10000) {
+          Update.abort(); ota_busy = false;
+          Dbg.println("[OTA] stale upload session aborted");
+        }
+        // Busy = another upload in flight OR a pull-OTA/check running. The old
+        // test was inverted: it let a second upload write into the first's session.
+        if (ota_busy || Update.isRunning()) { Dbg.println("[OTA] busy — upload rejected"); return; }
         ota_busy = true;
+        req->_tempObject = malloc(1);
         Dbg.printf("[OTA] web upload start: %s\n", fn.c_str());
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Dbg);
       }
+      if (!req->_tempObject) return;                     // not the owning upload
+      last_chunk = millis();
       if (Update.isRunning() && Update.write(data, len) != len) Update.printError(Dbg);
       if (final && Update.isRunning()) {
         if (Update.end(true)) Dbg.printf("[OTA] web upload ok: %u bytes\n", (unsigned)(index + len));
@@ -593,8 +663,15 @@ void vb_register_routes() {
 // =============================================================================
 //   Setup / loop helpers called from the main sketch
 // =============================================================================
+static volatile bool g_wifi_up = false;   // set on GOT_IP; a drop is only a drop from here
+
 void vb_on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    // Our own retries (_trySSID's disconnect, failed joins) fire this too. Only
+    // the first event after a working link is the real cause; recording the
+    // rest overwrote it with retry noise and inflated the drop count.
+    if (!g_wifi_up) return;
+    g_wifi_up = false;
     // The reason code is the whole diagnosis: arduino-esp32 decides whether to
     // auto-reconnect from it (STA.cpp:58 _is_staReconnectableReason), and the
     // codes it refuses — AUTH_FAIL 202, ASSOC_LEAVE 8 — are exactly the ones
@@ -614,6 +691,7 @@ void vb_on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
     return;
   }
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    g_wifi_up = true;
     if (vb_in_captive) {
       vb_dns.stop();
       WiFi.softAPdisconnect(true);
@@ -682,8 +760,15 @@ static void wifiMgrTask(void*) {
   //
   // NEVER runs concurrently with g_scan_busy; doing so would call esp_wifi_connect()
   // mid-scan which silently kills the scan (no WIFI_EVENT_SCAN_DONE ever fires).
+  //
+  // In service the watchdog NEVER opens the access point: that AP is open (no
+  // password) and sat next to a 16 V supply after any router outage over 60 s.
+  // It just keeps retrying the saved networks every 15 s. The AP is a boot-time
+  // fallback only (no saved network reachable at power-up); the USB console
+  // always works regardless.
+  uint32_t last_captive_try = 0;
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(60000));   // retry interval
+    vTaskDelay(pdMS_TO_TICKS(15000));   // check interval
 
     // Flush the post-mortem BEFORE any `continue` — a drop that recovers on its
     // own must still be recorded, since a self-healing drop today is the same
@@ -695,6 +780,10 @@ static void wifiMgrTask(void*) {
 
     if (!vb_in_captive && WiFi.status() == WL_CONNECTED) continue;
     if (g_wifi_conn_busy) continue;     // a user-initiated connect owns the radio
+    // In captive mode each STA attempt hops the radio and drops phones on the
+    // AP mid-setup, so only try once a minute there.
+    if (vb_in_captive && millis() - last_captive_try < 60000) continue;
+    last_captive_try = millis();
 
     // Politely wait for any in-progress scan to finish before connecting
     while (g_scan_busy) vTaskDelay(pdMS_TO_TICKS(300));
@@ -706,7 +795,7 @@ static void wifiMgrTask(void*) {
     WiFi.setAutoReconnect(false);
     bool reconnected = _tryAllSSIDs(5000);
     if (reconnected) WiFi.setAutoReconnect(true);
-    else if (!vb_in_captive) vb_start_captive_ap();  // W1: never leave it orphaned
+    else if (!vb_in_captive) Dbg.println("WiFi still down — retrying in 15 s (no AP in service)");
     // vb_on_wifi_event handles AP teardown when GOT_IP fires after reconnect
   }
 }
