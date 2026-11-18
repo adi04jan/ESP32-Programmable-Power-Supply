@@ -35,6 +35,9 @@ void vb_load() {
     vb.pass[i] = vbPrefs.getString(("pass" + String(i)).c_str(), "");
   }
   vb.auth_token    = vbPrefs.getString ("token",         vb.auth_token);
+  vb.restore       = vbPrefs.getBool   ("restore",       vb.restore);
+  vb.r_mv          = vbPrefs.getULong  ("r_mv",          0);
+  vb.r_out         = vbPrefs.getUChar  ("r_out",         0);
   vbPrefs.end();
   nvs_unlock();
 }
@@ -57,8 +60,19 @@ void vb_save() {
   vbPrefs.putString ("mq_user",   vb.mqtt_user);
   vbPrefs.putString ("mq_pass",   vb.mqtt_pass);
   vbPrefs.putString ("mq_topic",  vb.mqtt_topic);
+  vbPrefs.putBool   ("restore",   vb.restore);
   vbPrefs.end();
   nvs_unlock();
+}
+
+void vb_save_outstate(uint32_t mv, uint8_t mask) {
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putULong("r_mv",  mv);
+  vbPrefs.putUChar("r_out", mask);
+  vbPrefs.end();
+  nvs_unlock();
+  vb.r_mv = mv; vb.r_out = mask;
 }
 
 // Persist just the auth token (called after login / first-boot token mint —

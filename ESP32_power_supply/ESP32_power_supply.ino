@@ -35,6 +35,14 @@
 static const uint8_t total_ssid_count = sizeof(ssids) / sizeof(ssids[0]);
 
 void setup() {
+  // Output switches FIRST — before Serial, NVS or anything that can take time.
+  // Each P-FET gate has a 10K pull-down, but GPIO5-7 are the C3's JTAG pins and
+  // carry a weak pull-up until configured. pinMode(OUTPUT) drives the GPIO_OUT
+  // register's reset value (LOW), and the explicit writes keep it that way.
+  pinMode(ENABLE_VV_PIN,  OUTPUT);  digitalWrite(ENABLE_VV_PIN,  LOW);
+  pinMode(ENABLE_5V_PIN,  OUTPUT);  digitalWrite(ENABLE_5V_PIN,  LOW);
+  pinMode(ENABLE_3V3_PIN, OUTPUT);  digitalWrite(ENABLE_3V3_PIN, LOW);
+
   g_nvs_mux = xSemaphoreCreateMutex();
   Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT
@@ -43,25 +51,21 @@ void setup() {
   Dbg.println();
   Dbg.println("Voltbench v" CURRENT_FIRMWARE_VERSION " booting...");
 
-  pinMode(ENABLE_VV_PIN,  OUTPUT);
-  pinMode(ENABLE_5V_PIN,  OUTPUT);
-  pinMode(ENABLE_3V3_PIN, OUTPUT);
-  digitalWrite(ENABLE_VV_PIN,  LOW);
-  digitalWrite(ENABLE_5V_PIN,  LOW);
-  digitalWrite(ENABLE_3V3_PIN, LOW);
-
   analogSetAttenuation(ADC_11db);   // 0–2500 mV input → supports output up to ~27.5 V
   analogReadResolution(12);
   Wire.begin();
   Wire.beginTransmission(MCP4017ADDRESS);
   Dbg.println(Wire.endTransmission() == 0 ? "MCP4017 OK @ 0x2F" : "WARNING: MCP4017 not found!");
 
-  // Start non-blocking voltage control task on core 0 before anything else
-  xTaskCreatePinnedToCore(voltageControlTask, "VoltCtrl", 4096, nullptr, 2, nullptr, 0);
-
   // Load NVS settings first so we can seed WiFi credentials
   vb_load();
   cal_load();   // restore the output-1 calibration map if one was saved
+  out_boot();   // log the reset; if restore is on, re-apply the pre-reboot setpoint + queue outputs
+
+  // Control task AFTER the map and any restored setpoint are in place, so its
+  // first acquire uses them. It also services the queued outputs, so a restore
+  // completes during vb_setup()'s Wi-Fi wait (up to 30 s), not after it.
+  xTaskCreatePinnedToCore(voltageControlTask, "VoltCtrl", 4096, nullptr, 2, nullptr, 0);
 
   // Seed credential.h entries only on first boot / after factory reset —
   // otherwise the UI's "Forget network" would revert on every reboot.
@@ -97,11 +101,11 @@ void setup() {
 
 // Phase 0 instrumentation: free heap and the largest allocatable block set the
 // budget for v2.1's static log ring (~24 KB) and the OLED framebuffer. The
-// worst moment is mid pull-OTA, when mbedTLS is holding ~50 KB. Watch this
-// under load before sizing anything.
+// worst moment is mid pull-OTA, when mbedTLS is holding ~50 KB. Once a minute:
+// every 10 s it crowded the USB stream that build-box scripts parse.
 static void heap_report() {
   static uint32_t t_heap = 0;
-  if (millis() - t_heap < 10000) return;
+  if (millis() - t_heap < 60000) return;
   t_heap = millis();
   Dbg.printf("[heap] free=%u largest=%u minfree=%u | stack loop=%u ctrl=%u\n",
              (unsigned)ESP.getFreeHeap(),

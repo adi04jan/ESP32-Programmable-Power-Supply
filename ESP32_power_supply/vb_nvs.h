@@ -32,6 +32,13 @@ struct VBSettings {
   String   mqtt_pass     = "";
   String   mqtt_topic    = "voltbench";
 
+  // Restore-after-reboot (opt-in). r_mv/r_out are the last settled setpoint and
+  // output mask (bit0 = out1), written by the control task 2 s after they stop
+  // changing — NOT by vb_save().
+  bool     restore       = false;
+  uint32_t r_mv          = 0;
+  uint8_t  r_out         = 0;
+
   static const uint8_t MAX_SSID = 4;
   String   ssid[MAX_SSID];
   String   pass[MAX_SSID];
@@ -51,6 +58,9 @@ void vb_save_token();
 // Written ONLY when the reason changes, so a reconnect storm costs one write.
 void    vb_save_wifi_drop(uint8_t reason, uint32_t uptime_s);
 uint8_t vb_load_wifi_drop(uint32_t *uptime_s);   // 0 = nothing recorded
+
+// Last settled setpoint + output mask (keys "r_mv"/"r_out"), for restore-after-reboot.
+void vb_save_outstate(uint32_t mv, uint8_t mask);
 
 // Output-1 calibration map persistence (keys "calmap"/"calok").
 void cal_save();

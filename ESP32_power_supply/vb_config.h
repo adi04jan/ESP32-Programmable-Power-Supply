@@ -13,12 +13,12 @@
 
 #include <Arduino.h>
 
-#define CURRENT_FIRMWARE_VERSION "3.0.1"
+#define CURRENT_FIRMWARE_VERSION "3.1.0"
 
 // Pull-OTA source: this repo's GitHub "latest release" assets. The device fetches
-// <base>version.txt, and if it differs from CURRENT_FIRMWARE_VERSION, downloads
-// <base>firmware_<latest>.bin. /releases/latest/download/ always resolves to the
-// newest release, so each new release is auto-discovered.
+// <base>version.txt, and if it is semver-NEWER than CURRENT_FIRMWARE_VERSION
+// (vp_semver_newer), downloads <base>firmware_<latest>.bin. Older or garbled
+// versions are ignored, so a device running ahead of GitHub never downgrades.
 #define OTA_GITHUB_URL "https://github.com/adi04jan/ESP32-Programmable-Power-Supply/releases/latest/download/"
 
 // ---- LM2596-ADJ feedback network: VOUT — 10K — FB — MCP4017 — GND ----
@@ -42,6 +42,12 @@
 #define ENABLE_3V3_PIN  7
 
 #define MCP4017ADDRESS  0x2F
+
+// Output-1 setpoint limits. Below ~2.47 V the LM2596 cannot regulate (its 1.235 V
+// reference + the pot floor) and the controller used to hang in "settling";
+// above 16 V is past the calibrated ceiling. Out-of-range is an ERROR, not a clamp.
+#define VB_VMIN_MV  2500u
+#define VB_VMAX_MV 16000u
 
 static const uint8_t dpMaxSteps   = 128;
 static const int     maxRangeOhms = 10000;
