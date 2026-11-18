@@ -77,9 +77,14 @@ static inline uint32_t cm_local_spacing(const uint16_t *map, int s) {
 // crosses floor_step, never moves against the intended direction.
 static inline int cm_correction_step(const uint16_t *map, int s, int floor_step,
                                      int32_t err_mV, uint32_t tgt_mV) {
-  uint32_t half = cm_local_spacing(map, s) / 2;
+  uint32_t spacing = cm_local_spacing(map, s);
+  uint32_t half = spacing / 2;
   uint32_t mag  = err_mV < 0 ? (uint32_t)(-err_mV) : (uint32_t)err_mV;
   if (mag <= half) return s;                       // within half a step: stay
+  // A reading more than 3 steps LOW is not a map error — it is the high-Z ADC
+  // divider sagging under load (seen: 12.2 V read at 13.5 V). Stepping UP on it
+  // would raise the real output a full step. Never move up on an implausible read.
+  if (err_mV < 0 && mag > 3 * spacing) return s;
   int cand = err_mV > 0 ? s + 1 : s - 1;           // too high -> +1 (lower V)
   cand = cm_clampi(cand, floor_step, CM_STEPS - 1);
   if (cand == s || (err_mV > 0) != (cand > s)) return s;   // clamped away: stay

@@ -32,8 +32,14 @@ int main() {
   // --- correction never returns a predicted-overvolt step
   { // tgt=8700: step 39 (9075 mV) exceeds tgt+300=9000 -> must refuse the move
     assert(cm_correction_step(map, 40, 0, -400, 8700) == 40); }
-  { // same err but tgt=8900: step 39 no longer overvolts (9075<=9200) -> moves
-    assert(cm_correction_step(map, 40, 0, -400, 8900) == 39); }
+  { // a one-step-sized low reading still corrects upward (meas 9000 at step 40, tgt 9100)
+    assert(cm_correction_step(map, 40, 0, -100, 9100) == 39); }
+  { // implausible under-read (> 3 steps low, e.g. the ADC sagging under load) must
+    // never step UP, even when the map says the next step would not overvolt
+    assert(cm_correction_step(map, 40, 0, -400, 8900) == 40);
+    assert(cm_correction_step(map, 100, 0, -1300, 13500) == 100); }
+  { // a large HIGH reading may still step down (the safe direction)
+    assert(cm_correction_step(map, 40, 0, +400, map[41]) == 41); }
 
   puts("control_math: all checks passed");
   return 0;
