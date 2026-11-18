@@ -106,7 +106,7 @@ void console_exec(const String &lineIn, Print &out, uint8_t src) {
     else if (mv < VB_VMIN_MV || mv > VB_VMAX_MV)
       out.printf("ERR range %lu mV outside %u-%u mV\n", (unsigned long)mv, VB_VMIN_MV, VB_VMAX_MV);
     else {
-      apply_command("set_voltage", 1, mv / 1000.0f, src);   // float round-trips exactly at <= 16000 mV
+      apply_command("set_voltage", 1, mv / 1000.0f, src);   // float round-trips exactly at <= 17000 mV
       out.printf("OK set_mv=%u out=%d,%d,%d\n", g_target_mV,
                  psState.output1, psState.output2, psState.output3);
     }

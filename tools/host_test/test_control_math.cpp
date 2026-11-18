@@ -50,8 +50,11 @@ int main() {
     assert(cm_best_step(f, 13485) == 12);       // the build-box gateway setpoint: unchanged step
     // 13.7 V must not pick step 11 (~14.3 V real): the noisy swept map did (+0.6 V)
     assert(cm_best_step(f, 13700) == 12);
-    for (uint32_t t = 2500; t <= 16000; t += 10) {  // every valid target: a step, never > +300 mV
-      int s = cm_best_step(f, t); assert(s >= 0 && f[s] <= t + CM_OV_MARGIN_MV); }
+    for (uint32_t t = 2500; t <= 17000; t += 10) {  // every valid target (VB_VMAX_MV 17 V):
+      int s = cm_best_step(f, t);                    // a step, never > +300 mV, never the
+      assert(s >= 9 && f[s] <= t + CM_OV_MARGIN_MV); // unregulated dropout steps 0-8
+    }
+    assert(cm_best_step(f, 17000) == 9);         // top setpoint = step 9 (~16.6 V)
   }
 
   puts("control_math: all checks passed");

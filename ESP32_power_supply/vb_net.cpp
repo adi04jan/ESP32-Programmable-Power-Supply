@@ -376,7 +376,7 @@ void vb_register_routes() {
       req->send(200, "application/json", "{\"ok\":true}");
     else
       req->send(400, "application/json",
-        "{\"ok\":false,\"err\":\"rejected: unknown action, bad output, or value out of range (set_voltage 2.5-16 V)\"}");
+        "{\"ok\":false,\"err\":\"rejected: unknown action, bad output, or value out of range (set_voltage 2.5-17 V)\"}");
   });
 
   // Settings (JSON body)

@@ -13,7 +13,7 @@
 
 #include <Arduino.h>
 
-#define CURRENT_FIRMWARE_VERSION "3.1.1"
+#define CURRENT_FIRMWARE_VERSION "3.1.2"
 
 // Pull-OTA source: this repo's GitHub "latest release" assets. The device fetches
 // <base>version.txt, and if it is semver-NEWER than CURRENT_FIRMWARE_VERSION
@@ -45,9 +45,11 @@
 
 // Output-1 setpoint limits. Below ~2.47 V the LM2596 cannot regulate (its 1.235 V
 // reference + the pot floor) and the controller used to hang in "settling";
-// above 16 V is past the calibrated ceiling. Out-of-range is an ERROR, not a clamp.
+// 17 V admits pot step 9 (16.6 V, still regulating) but never steps 0-8: there the
+// LM2596 is in dropout and outputs the input adapter minus ~1 V (~18 V today), i.e.
+// whatever adapter is plugged in. Out-of-range is an ERROR, not a clamp.
 #define VB_VMIN_MV  2500u
-#define VB_VMAX_MV 16000u
+#define VB_VMAX_MV 17000u
 
 static const uint8_t dpMaxSteps   = 128;
 static const int     maxRangeOhms = 10000;

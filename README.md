@@ -19,7 +19,7 @@ Designed and developed by **Aditya Biswas**.
 ### Power Outputs
 | Channel | Rail | Range | Regulation |
 |---------|------|-------|------------|
-| CH1 | LM2596-ADJ (variable) | 2.5 V – 16 V | map-based deadbeat control (fixed step→voltage map) |
+| CH1 | LM2596-ADJ (variable) | 2.5 V – 17 V (top step 16.6 V) | map-based deadbeat control (fixed step→voltage map) |
 | CH2 | Mini360 (fixed 5 V) | 5.0 V | Passthrough (monitor only) |
 | CH3 | LM1117-3.3 (LDO, fixed) | 3.3 V | Passthrough (monitor only) |
 

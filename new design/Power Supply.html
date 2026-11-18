@@ -751,7 +751,7 @@ canvas#graph{display:block;width:100%;height:380px}
 // Power-cycle: off now, back on after N s once the rail checks out
 {"action":"cycle","output":2,"value":15,"token":"YOUR_TOKEN"}
 
-// A rejected command (bad channel, value outside 2.5-16 V) replies with "err"</pre>
+// A rejected command (bad channel, value outside 2.5-17 V) replies with "err"</pre>
           </div>
 
           <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">
@@ -820,7 +820,7 @@ const demo = (() => {
     captive: false,
     require_login: true,
     password: "admin",
-    vmax: 16.0,
+    vmax: 17.0,
     ota_auto: true,
     fast: true,
     smooth: false,
@@ -1031,7 +1031,7 @@ function fmtTime(ms){
 
 /* ---------- State -------------------------------------------------- */
 const channels = [
-  { n:1, key:"variable", title:"Variable Output", pin:"GPIO 5",  min:2.5, max:16.0, step:0.1, hasSlider:true,  color:"#3dd68c" },
+  { n:1, key:"variable", title:"Variable Output", pin:"GPIO 5",  min:2.5, max:17.0, step:0.1, hasSlider:true,  color:"#3dd68c" },
   { n:2, key:"fixed5",   title:"5 V Output",      pin:"GPIO 6",  fixed:5.00,  color:"#5ec6f0" },
   { n:3, key:"fixed3v3", title:"3.3 V Output",    pin:"GPIO 7",  fixed:3.30,  color:"#a78bfa" },
 ];

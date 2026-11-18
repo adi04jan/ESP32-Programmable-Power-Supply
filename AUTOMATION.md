@@ -1,8 +1,8 @@
-# Voltbench — Automation & Test Reference (firmware v3.1.1)
+# Voltbench — Automation & Test Reference (firmware v3.1.2)
 
 A self-contained guide for driving a Voltbench ESP32-C3 programmable power supply
 over its HTTP/WebSocket API — for automated testing, CI rigs, or another agent
-session. Written against firmware **3.1.1** (console protocol, errors, restore and
+session. Written against firmware **3.1.2** (console protocol, errors, restore and
 cycle are new in 3.1.0; the fixed CH1 map replaced the calibration sweep in 3.1.1 —
 older units answer differently).
 
@@ -14,7 +14,7 @@ A 3-channel bench supply with a Wi-Fi web UI:
 
 | Channel | Rail | Control |
 |---------|------|---------|
-| **1 (VAR)** | Variable **2.5–~16 V** | Software-set via an MCP4017 digital pot in the LM2596 feedback loop |
+| **1 (VAR)** | Variable **2.5–17 V** | Software-set via an MCP4017 digital pot in the LM2596 feedback loop |
 | 2 | Fixed **5 V** | On/off only |
 | 3 | Fixed **3.3 V** | On/off only |
 
@@ -102,8 +102,8 @@ send `quiet 1` (stops the 1 Hz `[tel]` line) and your commands.
 |---|---|---|
 | `s` | `OK STAT out=1,1,0 set_mv=13500 rail1_mv=13420 rail2_mv=5010 rail3_mv=3300 ctl=frozen cal=1 pend=0 restore=1 up_s=123` | fixed format — parse this one |
 | `?` | `OK set=13500mV meas=… disp=… state=3 R=952ohm cal=1 out=110` | legacy fields kept for old scripts. `R=` is the pot wiper, `state=` the controller (3 = frozen) — **neither describes the load** |
-| `id` / `*idn?` | `OK ID voltbench fw=3.1.1 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
-| `v13.5` · `v13500mV` | `OK set_mv=13500 out=…` | **setpoint only — never switches an output.** `ERR arg` for garbage, `ERR range` outside 2.5–16 V |
+| `id` / `*idn?` | `OK ID voltbench fw=3.1.2 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
+| `v13.5` · `v13500mV` | `OK set_mv=13500 out=…` | **setpoint only — never switches an output.** `ERR arg` for garbage, `ERR range` outside 2.5–17 V |
 | `o1 1` / `o2 0` / `o3 1` | `OK out=1,0,1` | switch one output (`o0`/`o1` still work for CH1) |
 | `off` | `OK out=0,0,0` | all outputs off |
 | `cycle <ch> <sec>` | `OK cycle ch=1 off_s=15 …` | off now, back on after `sec` (1–3600) **only if the rail checks out**; done by the firmware, so it survives the host dying. Any explicit switch command on that channel cancels it |
@@ -153,7 +153,7 @@ a stale `frozen` from the previous target.
 
 - `value` accepts `1/0`, `true/false`, `on/off` or a number.
 - **Errors are real (3.1.0):** an unknown action, bad `output`, or `set_voltage` outside
-  **2.5–16 V** returns **400** `{"ok":false,"err":…}` and changes nothing (it used to clamp
+  **2.5–17 V** returns **400** `{"ok":false,"err":…}` and changes nothing (it used to clamp
   silently and always answer `ok`).
 - `set_voltage` never switches an output on.
 
@@ -312,7 +312,7 @@ or an explicitly allowed host, avoids that.)*
 > `POST /api/login {pass:"admin"}` **once** and reuse the returned `token` in an
 > `X-Auth` header for every call — logging in again rotates and invalidates the old
 > token. (2) Only channel 1 is variable; set it with `POST /api/control
-> action=set_voltage output=1 value=<volts>` (2.5–16 V; outside → HTTP 400). (3) After a set,
+> action=set_voltage output=1 value=<volts>` (2.5–17 V; outside → HTTP 400). (3) After a set,
 > poll `/api/status` until `state=="frozen"`, wait ~1.5 s, then read `voltage1`.
 > (4) Do **not** assert exact voltage — output is quantized to a non-uniform pot ladder
 > (~30 mV/step low, ~0.9 V/step near 15 V); assert within half a local step, or against

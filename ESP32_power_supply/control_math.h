@@ -21,7 +21,7 @@ static inline int cm_clampi(int v, int lo, int hi) { return v < lo ? lo : (v > h
 // rms 103 mV = sweep noise, no region off in both sweeps, step 12 predicted
 // 13423 mV vs 13430 measured. Physically A ~ LM2596 Vref, C ~ wiper resistance.
 // Steps above the input rail (~18 V) are clamped there and are never selected
-// (VB_VMAX_MV 16 V). Rework the pot, the feedback resistor or VV_ADC_SCALE ->
+// (VB_VMAX_MV 17 V: top selectable step is 9). Rework the pot, the feedback resistor or VV_ADC_SCALE ->
 // re-measure and refit these three (the old sweep: git show aee725e).
 #define CM_FIX_A_MV 1225.1f
 #define CM_FIX_B    176744.0f
