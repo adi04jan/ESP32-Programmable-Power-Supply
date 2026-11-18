@@ -71,6 +71,27 @@ void vb_save_token() {
   nvs_unlock();
 }
 
+// WiFi drop post-mortem — see vb_nvs.h. Caller gates on "reason changed", so
+// this is a handful of writes over the device's life, not one per disconnect.
+void vb_save_wifi_drop(uint8_t reason, uint32_t uptime_s) {
+  nvs_lock();
+  vbPrefs.begin("voltbench", false);
+  vbPrefs.putUChar("wd_rsn", reason);
+  vbPrefs.putULong("wd_up",  uptime_s);
+  vbPrefs.end();
+  nvs_unlock();
+}
+
+uint8_t vb_load_wifi_drop(uint32_t *uptime_s) {
+  nvs_lock();
+  vbPrefs.begin("voltbench", true);
+  uint8_t r = vbPrefs.getUChar("wd_rsn", 0);
+  if (uptime_s) *uptime_s = vbPrefs.getULong("wd_up", 0);
+  vbPrefs.end();
+  nvs_unlock();
+  return r;
+}
+
 // Output-1 calibration map persistence (256-byte blob in NVS)
 void cal_save() {
   nvs_lock();

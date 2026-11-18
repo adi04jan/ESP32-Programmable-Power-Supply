@@ -35,6 +35,15 @@ static SemaphoreHandle_t g_wifi_ready     = nullptr; // given when initial WiFi 
 // Forward declaration (defined in captive portal section below)
 void vb_start_captive_ap();
 
+// ---------- WiFi drop post-mortem ----------
+// Set on the WiFi event task, persisted by wifiMgrTask — a Preferences write is
+// a 10-40 ms flash erase and must not run on the event task. Read by /api/info
+// straight from RAM, never via NVS, so the AsyncTCP task can't block on g_nvs_mux.
+volatile uint8_t  g_wifi_last_reason = 0;   // last disconnect reason this boot (0 = none)
+volatile uint32_t g_wifi_drops       = 0;   // drop count this boot
+volatile uint32_t g_wifi_last_drop_s = 0;   // uptime seconds at the last drop
+volatile uint8_t  g_wifi_boot_reason = 0;   // reason loaded from NVS at boot = why it died last time
+
 // ---------- Scan task ----------
 // Runs WiFi.scanNetworks() (blocking) on its own stack so it never executes on
 // the lwIP / AsyncWebServer task.  CRITICAL: esp_wifi_connect() called during an
@@ -288,6 +297,13 @@ void vb_register_routes() {
       d["ssid"]          = WiFi.SSID();
       d["rssi"]          = WiFi.RSSI();
       d["uptime"]        = millis() / 1000;
+      // WiFi post-mortem. Served from RAM only — an NVS read here would take
+      // g_nvs_mux on the AsyncTCP task and stall the stack behind a cal_save().
+      auto wd = d["wifi_drop"].to<JsonObject>();
+        wd["n"]      = g_wifi_drops;         // drops seen this boot
+        wd["reason"] = g_wifi_last_reason;   // last reason this boot (0 = none)
+        wd["at"]     = g_wifi_last_drop_s;
+        wd["prev"]   = g_wifi_boot_reason;   // why the link died before this boot
       auto ota = d["ota"].to<JsonObject>();
         ota["auto"] = vb.ota_auto;
       auto exp = d["exp"].to<JsonObject>();
@@ -577,7 +593,26 @@ void vb_register_routes() {
 // =============================================================================
 //   Setup / loop helpers called from the main sketch
 // =============================================================================
-void vb_on_wifi_event(WiFiEvent_t event) {
+void vb_on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    // The reason code is the whole diagnosis: arduino-esp32 decides whether to
+    // auto-reconnect from it (STA.cpp:58 _is_staReconnectableReason), and the
+    // codes it refuses — AUTH_FAIL 202, ASSOC_LEAVE 8 — are exactly the ones
+    // that used to strand the device. Nothing logged this before.
+    uint8_t reason = info.wifi_sta_disconnected.reason;
+    g_wifi_last_reason = reason;
+    g_wifi_last_drop_s = millis() / 1000;
+    g_wifi_drops++;
+    Dbg.printf("WiFi DROP #%u: reason=%u (%s) at %us uptime\n",
+               (unsigned)g_wifi_drops, (unsigned)reason,
+               WiFi.STA.disconnectReasonName((wifi_err_reason_t)reason),
+               (unsigned)g_wifi_last_drop_s);
+    return;
+  }
+  if (event == ARDUINO_EVENT_WIFI_STA_LOST_IP) {
+    Dbg.println("WiFi LOST_IP — associated but no lease; watchdog will rejoin");
+    return;
+  }
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     if (vb_in_captive) {
       vb_dns.stop();
@@ -601,6 +636,17 @@ static void wifiMgrTask(void*) {
   WiFi.setAutoReconnect(false);   // we drive all reconnection ourselves
   WiFi.mode(WIFI_STA);
 
+  // First thing after a power cycle: say why the last link died. Without this
+  // the RAM log ring is already gone and the failure is unfalsifiable.
+  uint32_t last_drop_s   = 0;
+  uint8_t  saved_reason  = vb_load_wifi_drop(&last_drop_s);
+  g_wifi_boot_reason     = saved_reason;
+  if (saved_reason)
+    Dbg.printf("Last WiFi drop before this boot: reason=%u (%s) at %us uptime\n",
+               (unsigned)saved_reason,
+               WiFi.STA.disconnectReasonName((wifi_err_reason_t)saved_reason),
+               (unsigned)last_drop_s);
+
   // Boot: try every saved SSID with a 5 s timeout (was 12 s; reduces AP-start delay)
   bool ok = _tryAllSSIDs(5000);
 
@@ -621,21 +667,46 @@ static void wifiMgrTask(void*) {
   // Signal vb_setup() — it has been blocking on this semaphore
   xSemaphoreGive(g_wifi_ready);
 
-  // Background loop: periodically retry saved SSIDs while in captive portal mode.
+  // Background loop: the connection watchdog. Retries saved SSIDs whenever the
+  // link is down — in captive portal mode OR after the link dropped in service.
+  //
+  // setAutoReconnect(true) is NOT a recovery guarantee and must never be the only
+  // one. arduino-esp32 3.2.1 STA.cpp gives up permanently on any disconnect reason
+  // missing from _is_staReconnectableReason(): WIFI_REASON_AUTH_FAIL (202) falls
+  // through to `default: return false`, and WIFI_REASON_ASSOC_LEAVE (8) is an
+  // explicit "Voluntarily disconnected. Don't reconnect!". One such deauth — a
+  // router reboot, PSK rotation, band steering — used to wedge the STA until a
+  // power cycle, because this loop only ever looked at vb_in_captive.
+  // WL_CONNECTED is set on GOT_IP and cleared on LOST_IP, so it also covers a
+  // DHCP lease that expires without renewing (associated but unreachable).
+  //
   // NEVER runs concurrently with g_scan_busy; doing so would call esp_wifi_connect()
   // mid-scan which silently kills the scan (no WIFI_EVENT_SCAN_DONE ever fires).
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(60000));   // retry interval
-    if (!vb_in_captive) continue;
+
+    // Flush the post-mortem BEFORE any `continue` — a drop that recovers on its
+    // own must still be recorded, since a self-healing drop today is the same
+    // fault as a fatal one tomorrow. Gated on change: a storm costs one write.
+    if (g_wifi_last_reason != saved_reason) {
+      saved_reason = g_wifi_last_reason;
+      vb_save_wifi_drop(saved_reason, g_wifi_last_drop_s);
+    }
+
+    if (!vb_in_captive && WiFi.status() == WL_CONNECTED) continue;
     if (g_wifi_conn_busy) continue;     // a user-initiated connect owns the radio
 
     // Politely wait for any in-progress scan to finish before connecting
     while (g_scan_busy) vTaskDelay(pdMS_TO_TICKS(300));
-    if (!vb_in_captive) continue;       // re-check: scan may have triggered connect
+    if (!vb_in_captive && WiFi.status() == WL_CONNECTED) continue;  // re-check
+
+    if (!vb_in_captive)
+      Dbg.printf("WiFi link lost (status=%d) — retrying saved SSIDs\n", (int)WiFi.status());
 
     WiFi.setAutoReconnect(false);
     bool reconnected = _tryAllSSIDs(5000);
     if (reconnected) WiFi.setAutoReconnect(true);
+    else if (!vb_in_captive) vb_start_captive_ap();  // W1: never leave it orphaned
     // vb_on_wifi_event handles AP teardown when GOT_IP fires after reconnect
   }
 }

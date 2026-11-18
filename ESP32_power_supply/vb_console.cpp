@@ -28,11 +28,20 @@ void console_exec(const String &lineIn, Print &out) {
                        out.printf("[con] set=%dmV out1=on\n", (int)(psState.voltage1 * 1000)); }
   else if (l == "o1") { apply_command("toggle", 1, 1.0f); out.println("[con] out1=on"); }
   else if (l == "o0") { apply_command("toggle", 1, 0.0f); out.println("[con] out1=off"); }
+  // Fixed 5 V / 3.3 V rails were web/MQTT-only, so a headless host on USB (the
+  // build box, Voltbench off-LAN) could not switch them. Exact match only.
+  else if (l == "o2 1" || l == "o2 0" || l == "o3 1" || l == "o3 0") {
+                       uint8_t ch = l[1] - '0'; bool on = l[3] == '1';
+                       apply_command("toggle", ch, on ? 1.0f : 0.0f);
+                       out.printf("[con] out%u=%s\n", ch, on ? "on" : "off"); }
   else if (c == 'm')  { g_cal_sweep_req = true; out.println("[con] calibration sweep requested"); }
   else if (c == 'c')  { out.printf("[con] cal valid=%d\n", g_cal_valid ? 1 : 0); }
-  else if (c == '?')  { out.printf("[con] set=%umV meas=%umV disp=%umV state=%u R=%dohm cal=%d\n",
-                          g_setpoint_mV, g_measured_mV, g_display_mV, g_vctrl_state, (int)dpCalcR(), g_cal_valid ? 1 : 0); }
-  else out.println("[con] cmds: v<volts> o1 o0 m c ?");
+  // out=<1><2><3> appended last so existing `?` parsers keep working; it is the
+  // only way to read the switch states back (the rail ack is otherwise the sole signal).
+  else if (c == '?')  { out.printf("[con] set=%umV meas=%umV disp=%umV state=%u R=%dohm cal=%d out=%d%d%d\n",
+                          g_setpoint_mV, g_measured_mV, g_display_mV, g_vctrl_state, (int)dpCalcR(), g_cal_valid ? 1 : 0,
+                          psState.output1, psState.output2, psState.output3); }
+  else out.println("[con] cmds: v<volts> o1 o0 o2|o3 <0|1> m c ?");
 }
 
 static void remote_debug_pump() {
@@ -44,7 +53,7 @@ static void remote_debug_pump() {
     telnetAuthed = !vb.require_login;
     g_telnetRead = (g_logw > (uint32_t)LOGN) ? g_logw - LOGN : 0;   // begin with recent history
     telnetCli.printf("Voltbench v%s debug. ", CURRENT_FIRMWARE_VERSION);
-    telnetCli.println(telnetAuthed ? "cmds: v<volts> o1 o0 m c ?" : "password:");
+    telnetCli.println(telnetAuthed ? "cmds: v<volts> o1 o0 o2|o3 <0|1> m c ?" : "password:");
   }
   if (telnetCli && telnetCli.connected()) {
     // Budget the flush to the socket's free send space — a stalled peer must
@@ -62,7 +71,7 @@ static void remote_debug_pump() {
         if (tin.length()) {
           if (!telnetAuthed) {
             telnetAuthed = (tin == vb.password);
-            telnetCli.println(telnetAuthed ? "ok. cmds: v<volts> o1 o0 m c ?" : "bad password");
+            telnetCli.println(telnetAuthed ? "ok. cmds: v<volts> o1 o0 o2|o3 <0|1> m c ?" : "bad password");
           } else console_exec(tin, telnetCli);
           tin = "";
         }

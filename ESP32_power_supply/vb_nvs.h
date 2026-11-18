@@ -45,6 +45,13 @@ void vb_load();
 void vb_save();
 void vb_save_token();
 
+// WiFi drop post-mortem (keys "wd_rsn"/"wd_up"). The debug ring is 3 KB of RAM,
+// so a power cycle — the only way back from a wedged link — erases the evidence
+// for the one failure you can't watch happen. Reason code survives instead.
+// Written ONLY when the reason changes, so a reconnect storm costs one write.
+void    vb_save_wifi_drop(uint8_t reason, uint32_t uptime_s);
+uint8_t vb_load_wifi_drop(uint32_t *uptime_s);   // 0 = nothing recorded
+
 // Output-1 calibration map persistence (keys "calmap"/"calok").
 void cal_save();
 void cal_load();
