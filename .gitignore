@@ -3,6 +3,14 @@ ESP32_power_supply/credential.h
 
 # Arduino build artifacts
 ESP32_power_supply/build/
+build/
+firmware_*.bin
+version.txt
+
+# Host-test / simulator binaries, Python caches
+*.exe
+__pycache__/
+.pytest_cache/
 _ota/
 *.elf
 *.map
