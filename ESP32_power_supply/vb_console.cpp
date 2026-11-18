@@ -76,11 +76,11 @@ void console_exec(const String &lineIn, Print &out, uint8_t src) {
   }
   else if (l == "s") {        // fixed format; rails are measured BEFORE the output switches
     out.printf("OK STAT out=%d,%d,%d set_mv=%u rail1_mv=%u rail2_mv=%u rail3_mv=%u "
-               "ctl=%s cal=%d pend=%u restore=%d up_s=%lu\n",
+               "ctl=%s cal=%d pend=%u restore=%d up_s=%lu exp1_mv=%lu\n",
                psState.output1, psState.output2, psState.output3, g_setpoint_mV,
                g_display_mV, g_5v_mV, g_3v3_mV, vb_ctl_name(g_vctrl_state),
                g_cal_valid ? 1 : 0, vb_pending_mask(), vb.restore ? 1 : 0,
-               (unsigned long)(millis() / 1000));
+               (unsigned long)(millis() / 1000), (unsigned long)vb_expected1_mv());
   }
   else if (l == "id" || l == "*idn?") {
     out.printf("OK ID voltbench fw=%s mac=%s ip=%s mdns=%s up_s=%lu reset=%s\n",

@@ -35,6 +35,10 @@ void out_boot();
 // Current wiper resistance, for diagnostics/console output (NOT the load).
 float dpCalcR();
 
+// CH1 regulator voltage the fixed map predicts for the current pot step (mV),
+// 0 until the pot is written after boot. Trust it over the CH1 sense under load.
+uint32_t vb_expected1_mv();
+
 // Fill g_cal_mv with this board's fixed step->mV map. Call once in setup().
 void cal_init();
 

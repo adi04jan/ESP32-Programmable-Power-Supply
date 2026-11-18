@@ -9,15 +9,25 @@
 // setSteps() prints to Serial 4x per call, flooding the port and adding jitter in
 // the control hot loop.) Tracks the wiper step locally so dpCalcR() stays consistent.
 static volatile uint16_t g_wiper_step = 0;
+static volatile bool     g_wiper_known = false;   // false until the first write after boot
 static int dpStepForR(float Rout) { return cm_step_for_r(Rout); }
 static void dpSetStep(int s) {
   s = constrain(s, 0, dpMaxSteps - 1);
   g_wiper_step = (uint16_t)s;
+  g_wiper_known = true;
   Wire.beginTransmission(MCP4017ADDRESS);
   Wire.write((uint8_t)s);
   Wire.endTransmission();
 }
 static void dpSetR(float Rout) { dpSetStep(dpStepForR(Rout)); }
+// CH1 regulator voltage the fixed map predicts for the current wiper step. Checked
+// 2026-11-18 (farm run 72) against the gateway's own input ADC: the gateway reads
+// this minus a constant 0.52 V (+-0.03) across 10.8-15.4 V, while the CH1 sense
+// reads 0.6-1.25 V low and noisy under load. 0 until the pot has been written.
+uint32_t vb_expected1_mv() {
+  return (g_wiper_known && g_cal_valid) ? g_cal_mv[g_wiper_step] : 0;
+}
+
 float dpCalcR() {
   return ((float)g_wiper_step / dpMaxSteps) * (float)maxRangeOhms + (float)MCPWIPEROHMS;
 }

@@ -13,7 +13,7 @@
 
 #include <Arduino.h>
 
-#define CURRENT_FIRMWARE_VERSION "3.1.2"
+#define CURRENT_FIRMWARE_VERSION "3.1.3"
 
 // Pull-OTA source: this repo's GitHub "latest release" assets. The device fetches
 // <base>version.txt, and if it is semver-NEWER than CURRENT_FIRMWARE_VERSION

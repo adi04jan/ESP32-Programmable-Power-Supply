@@ -153,7 +153,8 @@ void vb_fill_status(JsonDocument &d) {
   d["output1"]  = psState.output1;
   d["output2"]  = psState.output2;
   d["output3"]  = psState.output3;
-  d["voltage1"] = g_display_mV / 1000.0f;   // median-of-5 (spec §2.3)
+  d["voltage1"] = g_display_mV / 1000.0f;   // CH1 sense, median-of-5 (reads LOW under load)
+  d["expected1"] = vb_expected1_mv() / 1000.0f;  // map value for the current pot step
   d["cal"]      = g_cal_valid;
   d["voltage2"] = g_5v_mV  / 1000.0f;
   d["voltage3"] = g_3v3_mV / 1000.0f;

@@ -860,6 +860,7 @@ const demo = (() => {
       return {
         output1:state.output1, output2:state.output2, output3:state.output3,
         voltage1:+state.measured1.toFixed(2),
+        expected1:state.set1,
         voltage2:+state.measured2.toFixed(2),
         voltage3:+state.measured3.toFixed(2),
         set1:state.set1,
@@ -1053,7 +1054,7 @@ let evts = JSON.parse(localStorage.getItem(EVT_KEY)  || "[]");
 
 let saveHistTimer = null;
 function pushHist(s){
-  hist.push({t:Date.now(), v1:s.voltage1, v2:s.voltage2, v3:s.voltage3, o1:s.output1, o2:s.output2, o3:s.output3, s1:s.set1});
+  hist.push({t:Date.now(), v1:ch1Reading(s), v2:s.voltage2, v3:s.voltage3, o1:s.output1, o2:s.output2, o3:s.output3, s1:s.set1});
   if (hist.length > HIST_MAX) hist.splice(0, hist.length - HIST_MAX);
   if (!saveHistTimer) saveHistTimer = setTimeout(()=>{
     saveHistTimer = null;
@@ -1239,6 +1240,13 @@ function renderChannels(){
   }
 }
 
+// CH1 under load: the sense divider reads 0.6-1.25 V LOW and noisy, while the
+// gateway's own input ADC tracks the pot step's map value (minus its input drop)
+// to +-0.03 V. So with output 1 on, show the map value for the current step.
+function ch1Reading(s){
+  return (s.output1 && s.expected1 > 0) ? s.expected1 : s.voltage1;
+}
+
 function paintChannels(s){
   if (!s) return;
   for (const c of channels){
@@ -1247,7 +1255,8 @@ function paintChannels(s){
     el.classList.toggle("on", on);
     el.querySelector(".state-text").textContent = on ? "ON" : "OFF";
     const meas = el.querySelector("[data-meas]");
-    const v = emaFilter(c.n, s["voltage"+c.n] || 0);
+    const useExp = c.n === 1 && on && s.expected1 > 0;
+    const v = useExp ? s.expected1 : emaFilter(c.n, s["voltage"+c.n] || 0);
     meas.textContent = v.toFixed(2);
 
     const delta = el.querySelector("[data-delta]");
@@ -1255,13 +1264,15 @@ function paintChannels(s){
     else if (!c.hasSlider){ delta.textContent = ""; }
     if (c.hasSlider){
       const set = s.set1 || 0;
-      const diff = v - set;
-      // The sense divider sits before the switch and reads LOW under load, so
-      // this is a sensing difference, not proof the output is off-target.
-      if (on && Math.abs(diff) > 0.05){
-        delta.textContent = `sense Δ ${diff>=0?"+":""}${diff.toFixed(2)} V`;
+      if (useExp){
+        // Readout = the pot step's map value. Show the raw sense too, never as a warning.
+        delta.textContent = `sense ${emaFilter(1, s.voltage1 || 0).toFixed(2)} V (reads low under load)`;
+        delta.classList.remove("warn");
+      } else if (on){
+        const diff = v - set;
+        delta.textContent = Math.abs(diff) > 0.05 ? `sense Δ ${diff>=0?"+":""}${diff.toFixed(2)} V` : "";
         delta.classList.toggle("warn", Math.abs(diff) > 0.1);
-      } else if (on){ delta.textContent = ""; delta.classList.remove("warn"); }
+      }
       // dial needle reflects set-point
       const needle = el.querySelector("[data-needle]");
       const dialV = el.querySelector("[data-dial-v]");

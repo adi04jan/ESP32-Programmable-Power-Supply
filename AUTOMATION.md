@@ -1,8 +1,8 @@
-# Voltbench — Automation & Test Reference (firmware v3.1.2)
+# Voltbench — Automation & Test Reference (firmware v3.1.3)
 
 A self-contained guide for driving a Voltbench ESP32-C3 programmable power supply
 over its HTTP/WebSocket API — for automated testing, CI rigs, or another agent
-session. Written against firmware **3.1.2** (console protocol, errors, restore and
+session. Written against firmware **3.1.3** (console protocol, errors, restore and
 cycle are new in 3.1.0; the fixed CH1 map replaced the calibration sweep in 3.1.1 —
 older units answer differently).
 
@@ -100,9 +100,9 @@ send `quiet 1` (stops the 1 Hz `[tel]` line) and your commands.
 
 | Command | Reply | Notes |
 |---|---|---|
-| `s` | `OK STAT out=1,1,0 set_mv=13500 rail1_mv=13420 rail2_mv=5010 rail3_mv=3300 ctl=frozen cal=1 pend=0 restore=1 up_s=123` | fixed format — parse this one |
+| `s` | `OK STAT out=1,1,0 set_mv=13500 rail1_mv=13420 rail2_mv=5010 rail3_mv=3300 ctl=frozen cal=1 pend=0 restore=1 up_s=123 exp1_mv=13423` | fixed format — parse this one. `exp1_mv` (3.1.3) = map value for the current pot step, see §4 |
 | `?` | `OK set=13500mV meas=… disp=… state=3 R=952ohm cal=1 out=110` | legacy fields kept for old scripts. `R=` is the pot wiper, `state=` the controller (3 = frozen) — **neither describes the load** |
-| `id` / `*idn?` | `OK ID voltbench fw=3.1.2 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
+| `id` / `*idn?` | `OK ID voltbench fw=3.1.3 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
 | `v13.5` · `v13500mV` | `OK set_mv=13500 out=…` | **setpoint only — never switches an output.** `ERR arg` for garbage, `ERR range` outside 2.5–17 V |
 | `o1 1` / `o2 0` / `o3 1` | `OK out=1,0,1` | switch one output (`o0`/`o1` still work for CH1) |
 | `off` | `OK out=0,0,0` | all outputs off |
@@ -123,12 +123,17 @@ load by the load, never by these numbers. There is **no current sensing**.
 
 ```json
 {"output1":false,"output2":false,"output3":false,
- "voltage1":4.992,"voltage2":5.01,"voltage3":3.30,
+ "voltage1":4.992,"expected1":5.027,"voltage2":5.01,"voltage3":3.30,
  "set1":5.00,"cal":true,"state":"frozen","ts":123456}
 ```
 
 - `voltage1/2/3` — measured volts **before each output switch** (non-zero when off; CH1
   reads low under load). CH1 is a median-of-5.
+- `expected1` (3.1.3) — CH1 regulator voltage the fixed map predicts for the current pot
+  step; `0` until the pot is written after boot. **Under load, trust this over
+  `voltage1`.** Farm run 72 (2026-11-18) checked it against the build-box gateway's own
+  input ADC at 7 steps, 10.8–15.4 V: the gateway read `expected1 − 0.52 V` (±0.03, its
+  input drop), while `voltage1` read 0.6–1.25 V low and ~10× noisier.
 - `set1` — CH1 commanded set-point.
 - `cal` — step→mV map loaded (always `true` since 3.1.1: the map is fixed in firmware).
 - `state` — controller state: **`idle` `settling` `verifying` `frozen`**.
