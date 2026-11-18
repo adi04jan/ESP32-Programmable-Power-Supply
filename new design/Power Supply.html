@@ -254,6 +254,7 @@ a:hover{text-decoration:underline}
 }
 .set-row .target .u{font-family:var(--mono);font-size:11px;color:var(--muted)}
 .set-row .apply{flex-shrink:0}
+.set-row .stepbtn{flex-shrink:0;padding-left:11px;padding-right:11px}
 
 /* Toggle */
 .toggle{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
@@ -940,7 +941,8 @@ const demo = (() => {
     if (p === "/api/ota/update" || p === "/api/ota/force") {
       return {ok:true, started:true};
     }
-    if (p === "/api/cal/status") return {valid:state.cal, fixed:true};
+    if (p === "/api/cal/status") return {valid:state.cal, fixed:true,
+      mv: Array.from({length:128}, (_, i) => Math.min(18000, Math.round(1225.1 + 176744 / (i + 2.49))))};
     if (p === "/api/reboot") return {ok:true};
     if (p === "/api/factory_reset" && opts.method==="POST") {
       localStorage.removeItem("ps_hist");
@@ -1121,7 +1123,7 @@ function renderChannels(){
         <div>
           <div class="slider-row">
             <span class="min">${c.min.toFixed(2)}V</span>
-            <input class="slider" type="range" min="${c.min}" max="${c.max}" step="${c.step}" value="${c.min}" data-slider>
+            <input class="slider" type="range" min="${c.min}" max="${c.max}" step="any" value="${c.min}" data-slider aria-label="CH${c.n} set-point (snaps to real voltages)">
             <span class="max">${c.max.toFixed(1)}V</span>
           </div>
           <div class="set-row" style="margin-top:10px">
@@ -1129,6 +1131,8 @@ function renderChannels(){
               <input type="number" step="0.01" min="${c.min}" max="${c.max}" value="${c.min.toFixed(2)}" data-target>
               <span class="u">V</span>
             </div>
+            <button class="btn stepbtn" data-step="-1" aria-label="Next real voltage down" title="Next real voltage down">▼</button>
+            <button class="btn stepbtn" data-step="1" aria-label="Next real voltage up" title="Next real voltage up">▲</button>
             <button class="btn primary apply" data-apply>Set</button>
           </div>
           <div data-land style="display:none;font-family:var(--mono);font-size:11px;color:var(--amber);padding:4px 4px 0"></div>
@@ -1137,7 +1141,7 @@ function renderChannels(){
               <div class="track"></div>
               <div class="indicator" data-needle></div>
               <div class="hub"><div><div class="v" data-dial-v>0.00</div><div class="u">VOLTS</div></div></div>
-              <div class="hint">drag · shift = fine</div>
+              <div class="hint">drag · real steps only</div>
             </div>
           </div>
           <div class="presets" data-presets></div>
@@ -1184,7 +1188,16 @@ function renderChannels(){
           land.style.display = "block";
         } else land.style.display = "none";
       };
-      slider.addEventListener("input", ()=>{ target.value = (+slider.value).toFixed(2); showLanding(); });
+      slider.addEventListener("input", ()=>{
+        const v = snapReal(+slider.value);
+        slider.value = v; target.value = v.toFixed(2); showLanding();
+      });
+      slider.addEventListener("keydown", e=>{
+        const dir = {ArrowUp:1, ArrowRight:1, ArrowDown:-1, ArrowLeft:-1}[e.key];
+        if (!dir) return;
+        e.preventDefault();
+        const v = nextReal(+slider.value, dir, c); slider.value = v; target.value = v.toFixed(2); showLanding();
+      });
       target.addEventListener("input", ()=>{ slider.value = +target.value; showLanding(); });
       const submit = async ()=>{
         let v = Math.min(c.max, Math.max(c.min, +target.value || c.min));
@@ -1197,6 +1210,11 @@ function renderChannels(){
         pull();
       };
       apply.addEventListener("click", submit);
+      el.querySelectorAll("[data-step]").forEach(b => b.addEventListener("click", ()=>{
+        const v = nextReal(+target.value, +b.dataset.step, c);
+        target.value = v.toFixed(2); slider.value = v;
+        submit();
+      }));
       target.addEventListener("keydown", e=>{ if (e.key==="Enter") submit(); });
 
       // Presets
@@ -1212,12 +1230,13 @@ function renderChannels(){
         const clamped = Math.max(-135, Math.min(135, deg));
         let v = c.min + ((clamped + 135) / 270) * range;
         v = Math.round(v / (fine ? 0.01 : 0.05)) * (fine ? 0.01 : 0.05);
-        v = Math.max(c.min, Math.min(c.max, v));
+        v = snapReal(Math.max(c.min, Math.min(c.max, v)));
         target.value = v.toFixed(2);
         slider.value = v;
         showLanding();
         dialV.textContent = v.toFixed(2);
-        needle.style.transform = `translateX(-50%) rotate(${clamped+180}deg)`;
+        const shown = -135 + ((v - c.min) / range) * 270;   // needle sits on the real value
+        needle.style.transform = `translateX(-50%) rotate(${shown+180}deg)`;
         needle.style.transformOrigin = "center top";
       };
       let dragging = false;
@@ -1296,7 +1315,7 @@ function renderPresets(el, c, applyFn){
   const slider = el.querySelector("[data-slider]");
   const target = el.querySelector("[data-target]");
   const render = ()=>{
-    wrap.innerHTML = presets.map(v => `<button class="chip" data-v="${v}">${(+v).toFixed(2)} V<span class="x" data-del role="button" aria-label="Remove preset ${(+v).toFixed(2)} V" title="Remove">×</span></button>`).join("")
+    wrap.innerHTML = presets.map(v => `<button class="chip" data-v="${v}">${snapReal(+v).toFixed(2)} V<span class="x" data-del role="button" aria-label="Remove preset ${(+v).toFixed(2)} V" title="Remove">×</span></button>`).join("")
       + `<button class="chip add" data-add title="Save current as preset">＋</button>`;
     wrap.querySelectorAll(".chip[data-v]").forEach(b=>{
       b.addEventListener("click", e=>{
@@ -1306,8 +1325,9 @@ function renderPresets(el, c, applyFn){
           localStorage.setItem(KEY, JSON.stringify(presets));
           return render();
         }
-        target.value = (+b.dataset.v).toFixed(2);
-        slider.value = +b.dataset.v;
+        const v = snapReal(+b.dataset.v);
+        target.value = v.toFixed(2);
+        slider.value = v;
         applyFn();
       });
       b.addEventListener("contextmenu", e=>{
@@ -1319,10 +1339,11 @@ function renderPresets(el, c, applyFn){
       });
     });
     wrap.querySelector("[data-add]").addEventListener("click", ()=>{
-      const v = +target.value;
+      const v = snapReal(+target.value);
       if (!presets.includes(v)){ presets.push(v); presets.sort((a,b)=>a-b); localStorage.setItem(KEY, JSON.stringify(presets)); render(); }
     });
   };
+  el._renderPresets = render;
   render();
 }
 
@@ -2017,10 +2038,25 @@ function predictLanding(volts){
   }
   return best === null ? null : best / 1000;
 }
+// CH1 can only land on the pot's real step voltages (128, ~13 mV apart at 3 V
+// but ~1 V apart at 13-17 V). Every CH1 control snaps to them, so what you pick
+// is what the supply does. Without a map (not loaded yet) values pass through.
+function snapReal(v){
+  const p = predictLanding(v);
+  return p === null ? v : p;
+}
+function nextReal(v, dir, c){
+  if (!calMap) return Math.max(c.min, Math.min(c.max, +(v + dir * 0.1).toFixed(2)));
+  const ladder = [...new Set(calMap.filter(mv => mv >= c.min*1000 && mv <= c.max*1000))].map(mv => mv/1000).sort((a,b)=>a-b);
+  const cur = snapReal(v);
+  if (dir > 0) return ladder.find(x => x > cur + 0.0005) ?? cur;
+  return [...ladder].reverse().find(x => x < cur - 0.0005) ?? cur;
+}
 async function refreshCal(){
   let r; try { r = await api("/api/cal/status"); } catch(e){ return; }
   const b = $("#cal-badge");
   calMap = (r.valid && Array.isArray(r.mv)) ? r.mv : null;
+  document.querySelectorAll(".channel").forEach(el => el._renderPresets && el._renderPresets());
   if (r.valid){ b.textContent = r.fixed ? "FIXED · 128 STEPS" : "CALIBRATED"; b.className = "badge ok"; }
   else { b.textContent = "NO MAP"; b.className = "badge warn"; }
 }

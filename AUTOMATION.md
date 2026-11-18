@@ -1,8 +1,8 @@
-# Voltbench — Automation & Test Reference (firmware v3.1.3)
+# Voltbench — Automation & Test Reference (firmware v3.1.4)
 
 A self-contained guide for driving a Voltbench ESP32-C3 programmable power supply
 over its HTTP/WebSocket API — for automated testing, CI rigs, or another agent
-session. Written against firmware **3.1.3** (console protocol, errors, restore and
+session. Written against firmware **3.1.4** (console protocol, errors, restore and
 cycle are new in 3.1.0; the fixed CH1 map replaced the calibration sweep in 3.1.1 —
 older units answer differently).
 
@@ -102,7 +102,7 @@ send `quiet 1` (stops the 1 Hz `[tel]` line) and your commands.
 |---|---|---|
 | `s` | `OK STAT out=1,1,0 set_mv=13500 rail1_mv=13420 rail2_mv=5010 rail3_mv=3300 ctl=frozen cal=1 pend=0 restore=1 up_s=123 exp1_mv=13423` | fixed format — parse this one. `exp1_mv` (3.1.3) = map value for the current pot step, see §4 |
 | `?` | `OK set=13500mV meas=… disp=… state=3 R=952ohm cal=1 out=110` | legacy fields kept for old scripts. `R=` is the pot wiper, `state=` the controller (3 = frozen) — **neither describes the load** |
-| `id` / `*idn?` | `OK ID voltbench fw=3.1.3 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
+| `id` / `*idn?` | `OK ID voltbench fw=3.1.4 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
 | `v13.5` · `v13500mV` | `OK set_mv=13500 out=…` | **setpoint only — never switches an output.** `ERR arg` for garbage, `ERR range` outside 2.5–17 V |
 | `o1 1` / `o2 0` / `o3 1` | `OK out=1,0,1` | switch one output (`o0`/`o1` still work for CH1) |
 | `off` | `OK out=0,0,0` | all outputs off |
