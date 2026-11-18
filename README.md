@@ -36,7 +36,7 @@ Designed and developed by **Aditya Biswas**.
 
 ### Web UI
 - **Dashboard** — live voltage at 4 Hz, per-channel enable toggles, voltage slider, preset chips (right-click to delete, ＋ to save current), delta indicator, All Off button
-- **History** — bezier-smoothed time-series graph with SMA noise reduction, channel filters, event markers (output on/off), adjustable time window (1 min – 12 h)
+- **History** — bezier-smoothed time-series graph with SMA noise reduction, channel filters, event markers (output on/off), adjustable time window (1 / 5 / 15 min or all stored samples — the browser keeps the last 4000)
 - **Settings** — mDNS hostname, security/login, Wi-Fi management (scan/connect/forget, stores up to 4 SSIDs), OTA update, experimental flags (dial mode, EMA smoothing, fast poll), MQTT bridge
 - **Calibration card** — run/clear the CH1 calibration sweep and see whether a valid map is loaded
 - **Device log pane** — live firmware log streamed over a view-only WebSocket (`/logws`)
@@ -172,7 +172,13 @@ spiffs    448 KB   Reserved
 
 ### Regenerating the Web UI
 
-After editing `new design/Power Supply.html`, run this PowerShell snippet to rebuild `web_page.h`:
+After editing `new design/Power Supply.html`, rebuild `web_page.h` with:
+
+```sh
+python tools/gen_web_page.py   # deterministic gzip + verified round-trip; prints the new length
+```
+
+The older PowerShell snippet below still works but once wrote a stale header while exiting 0 — prefer the script:
 
 ```powershell
 $html  = Get-Content "new design\Power Supply.html" -Raw -Encoding utf8
@@ -371,7 +377,7 @@ Either path rejects a second update while one is already running (logged as `bus
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `voltbench.local` not resolving | mDNS client issue | Try IP directly; Android needs an mDNS helper app |
-| Voltage shows 0 V with output OFF | Expected — enable pin cuts power | Toggle output ON |
+| Voltage reading is non-zero with output OFF | Expected — the sense divider sits *before* the output switch, so it reads the regulator | Use the ON/OFF state, not the reading, to tell if an output is live |
 | CH1 settles far from setpoint | No calibration map — coarse fallback estimate in use | Run Settings → Calibration → Run sweep (CH1 unloaded) |
 | OTA "check" never returns `newer` | No release published yet, or `version.txt`/`.bin` missing from the GitHub release | Confirm the tag's release has both assets attached |
 | `MCP4017 not found!` at boot | I2C wiring | Check SDA/SCL and pull-up resistors (4.7 KΩ to 3.3 V) |

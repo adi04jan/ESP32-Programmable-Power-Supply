@@ -1,8 +1,9 @@
-# Voltbench — Automation & Test Reference (firmware v3.0.1)
+# Voltbench — Automation & Test Reference (firmware v3.1.0)
 
 A self-contained guide for driving a Voltbench ESP32-C3 programmable power supply
 over its HTTP/WebSocket API — for automated testing, CI rigs, or another agent
-session. Everything here is verified against firmware **3.0.1**.
+session. Written against firmware **3.1.0** (console protocol, errors, restore and
+cycle are new in 3.1.0 — older units answer differently).
 
 ---
 
@@ -60,7 +61,8 @@ Auth column: **Y** = 401 without a valid token when `require_login` is on.
 | GET  | `/api/status` | Y | live telemetry (see §4) |
 | POST | `/api/control` | Y | form: `action`, `output`, `value` (see §5) |
 | POST | `/api/settings` | Y | **JSON body** — nested settings patch (see §6) |
-| POST | `/api/cal/sweep` | Y | start calibration sweep (drives CH1 to max ~1 min) |
+| POST | `/api/cal/sweep` | Y | start ~60 s calibration sweep (**output 1 switched OFF** during it; 409 if running) |
+| GET  | `/api/log` | Y | `{n, lines:[…]}` last 32 output/setpoint changes with source |
 | GET  | `/api/cal/status` | Y | `{valid, running, mv:[128]}` |
 | POST | `/api/cal/clear` | Y | erase calibration map |
 | GET  | `/api/wifi/scan` | Y | `{scanning:true}` (202) then `{networks:[…]}` — **poll it** |
@@ -75,10 +77,48 @@ Auth column: **Y** = 401 without a valid token when `require_login` is on.
 | POST | `/api/factory_reset` | Y | wipe NVS + reboot |
 | WS   | `/ws` | token in msg | live status push (4 Hz) + command channel (see §7) |
 | WS   | `/logws` | – | view-only device log stream (same as telnet :23) |
-| TCP  | `:23` telnet | password | log stream + console: `v<volts> o1 o0 m c ?` |
+| TCP  | `:23` telnet | password | log stream + console (see §3a) |
+| USB  | CDC serial | – | same console (see §3a) |
 
 Async endpoints (`/api/wifi/scan`, `/api/ota/check`) return **202 `{…:true}`** while
 working and the real payload once ready — poll every ~1.5–2 s, cap the loop.
+
+---
+
+## 3a. USB serial / telnet console (3.1.0)
+
+Same commands on both: USB CDC at 115200 8N1 (`/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<MAC>-if00`
+on Linux; the ttyACM number moves) and telnet :23 (password = panel password).
+
+**Protocol.** Whole lower-cased tokens only. Every command gets **exactly one** reply line
+starting `OK` or `ERR <code>` (`log?` sends `> ` rows first, then its `OK`). Anything else on
+the stream (`[tel]` telemetry, `[chg]`, `[VCtrl]`, Wi-Fi logs) is log output; **ignore lines
+not starting `OK`/`ERR`.** USB replies are never dropped (≤100 ms wait for buffer room).
+
+**Opening the port (C3 traps):** the chip discards USB output until the host writes first,
+and the TX buffer may hold stale log lines. Send `\n`, drain/discard input for ~0.3 s, then
+send `quiet 1` (stops the 1 Hz `[tel]` line) and your commands.
+
+| Command | Reply | Notes |
+|---|---|---|
+| `s` | `OK STAT out=1,1,0 set_mv=13500 rail1_mv=13420 rail2_mv=5010 rail3_mv=3300 ctl=frozen cal=1 pend=0 restore=1 up_s=123` | fixed format — parse this one |
+| `?` | `OK set=13500mV meas=… disp=… state=3 R=952ohm cal=1 out=110` | legacy fields kept for old scripts. `R=` is the pot wiper, `state=` the controller (3 = frozen) — **neither describes the load** |
+| `id` / `*idn?` | `OK ID voltbench fw=3.1.0 mac=… ip=… mdns=… up_s=… reset=sw` | `reset` = why it last rebooted |
+| `v13.5` · `v13500mV` | `OK set_mv=13500 out=…` | **setpoint only — never switches an output.** `ERR arg` for garbage, `ERR range` outside 2.5–16 V |
+| `o1 1` / `o2 0` / `o3 1` | `OK out=1,0,1` | switch one output (`o0`/`o1` still work for CH1) |
+| `off` | `OK out=0,0,0` | all outputs off |
+| `cycle <ch> <sec>` | `OK cycle ch=1 off_s=15 …` | off now, back on after `sec` (1–3600) **only if the rail checks out**; done by the firmware, so it survives the host dying. Any explicit switch command on that channel cancels it |
+| `m!` | `OK sweep started …` | ~60 s calibration sweep. **Output 1 is switched OFF** for it and back on afterwards if it was on. Bare `m` → `ERR confirm` |
+| `c` | `OK cal=1 sweeping=0` | |
+| `log?` | `> 123.456 usb set ch=1 val=13500` … `OK LOG n=N` | last 32 output/setpoint changes with source (`usb telnet http ws mqtt sys`) |
+| `quiet 0\|1` | `OK quiet=1` | suppress the periodic `[tel]` line (not persisted) |
+| `restore 0\|1` · `restore?` | `OK restore=1 …` | restore-after-reboot (see §8.7) |
+| `help` | `OK cmds: …` | |
+
+**All `railN_mv` / `meas` values are measured BEFORE the output switch.** They show the
+regulator voltage even when the output is off, and the high-impedance CH1 divider reads
+**low under load** (≈12.2 V shown at a 13.5 V setpoint while the load saw ~12.9 V). Judge a
+load by the load, never by these numbers. There is **no current sensing**.
 
 ---
 
@@ -90,7 +130,8 @@ working and the real payload once ready — poll every ~1.5–2 s, cap the loop.
  "set1":5.00,"cal":true,"state":"frozen","ts":123456}
 ```
 
-- `voltage1/2/3` — measured volts (CH1 is a median-of-5, calm; CH2/3 sampled).
+- `voltage1/2/3` — measured volts **before each output switch** (non-zero when off; CH1
+  reads low under load). CH1 is a median-of-5.
 - `set1` — CH1 commanded set-point.
 - `cal` — calibration map present.
 - `state` — controller state: **`idle` `settling` `verifying` `frozen` `busy`**
@@ -99,7 +140,9 @@ working and the real payload once ready — poll every ~1.5–2 s, cap the loop.
 - **No** `current*` / `cc*` / `trip*` / `pid*` — that hardware/feature does not exist.
 
 **Waiting for a set-point to land:** poll `/api/status` until `state == "frozen"`,
-then wait ~1.5 s for the median display to settle before reading `voltage1`.
+then wait ~1.5 s for the median display to settle before reading `voltage1`. Since 3.1.0
+the state flips to `settling` the moment a new setpoint is accepted, so you can never see
+a stale `frozen` from the previous target.
 
 ---
 
@@ -110,9 +153,13 @@ then wait ~1.5 s for the median display to settle before reading `voltage1`.
 | `toggle` | `output=1..3`, `value=1|0` | enable/disable a channel |
 | `set_voltage` | `output=1`, `value=<volts>` | set CH1 (CH1 only) |
 | `all_off` | — | disable all channels |
+| `cycle` | `output=1..3`, `value=<seconds 1-3600>` | off now, back on after N s if the rail checks out |
 
-- `value` for `set_voltage` is **clamped to [0, 16] V** in firmware; NaN/negative → 0.
-- Out-of-range `output` is rejected (bounds-checked) — no effect.
+- `value` accepts `1/0`, `true/false`, `on/off` or a number.
+- **Errors are real (3.1.0):** an unknown action, bad `output`, or `set_voltage` outside
+  **2.5–16 V** returns **400** `{"ok":false,"err":…}` and changes nothing (it used to clamp
+  silently and always answer `ok`).
+- `set_voltage` never switches an output on.
 
 ```bash
 curl -s $AUTH -X POST -d "action=toggle&output=1&value=1" http://$IP/api/control
@@ -173,7 +220,8 @@ backs up the device. Send commands as JSON text frames:
 ```
 
 Include `token` in every command frame when `require_login` is on. `value` accepts a
-bool or number for `toggle`. **Client watchdog rule:** if the socket is open but no
+bool, number or numeric string. A rejected command replies with the status object plus
+`"err":"rejected"`. `cycle` works here too. **Client watchdog rule:** if the socket is open but no
 frame arrives for >3.5 s, close it and fall back to polling `/api/status` — the built-in
 UI does exactly this so a half-dead socket never freezes the display.
 
@@ -181,12 +229,9 @@ UI does exactly this so a half-dead socket never freezes the display.
 
 ## 8. Known gotchas & footguns (will bite automation)
 
-1. **OTA downgrade footgun.** The pull-OTA "newer" test is `latest != current`, i.e. it
-   treats *any* difference as update-worthy. A device running a version **newer than the
-   published GitHub "latest"** will **downgrade itself** on the next auto/`/api/ota/update`
-   check. When flashing a build ahead of the release (e.g. web-upload a pre-release),
-   **set `ota.auto:false` first**, or it will revert on reboot. Fixed only when the
-   matching release is published (`latest == current`).
+1. **OTA downgrade footgun — fixed in 3.1.0.** Units on ≤3.0.1 compare `latest != current`
+   and will **downgrade** a build that is ahead of GitHub's release; disable `ota.auto`
+   before web-uploading onto them. 3.1.0+ only installs a strictly semver-newer release.
 2. **Token rotation** — §2. One login per run.
 3. **Cached UI after OTA** — `/` is `no-cache` but that permits stale-without-validator;
    a browser can show the *old* UI after an update. Hard-reload, or verify the served
@@ -194,11 +239,21 @@ UI does exactly this so a half-dead socket never freezes the display.
 4. **`/api/ota/upload` reboots on success**, dropping the connection mid-request — your
    HTTP client will see a connection error / "context destroyed". That is **success**,
    not failure; confirm by polling `/api/info.fw` after ~10 s.
-5. **Calibration sweep ramps CH1 to its maximum (~16 V)** for ~1 min. Ensure CH1 is
-   unloaded or on a voltage-tolerant load before `POST /api/cal/sweep`. During the sweep
-   `state == "busy"` and set-voltage commands are ignored.
+5. **Calibration sweep (3.1.0): output 1 is switched OFF** for the ~60 s sweep — whatever
+   CH1 powers loses power, but never sees the ramp. It is switched back on afterwards (once
+   re-acquired and checked) if it was on. During the sweep `state == "busy"`, switching CH1
+   on is refused, and a new setpoint is applied after the sweep.
 6. **Reboot after any control** — none needed; changes are live. But `/api/reboot`,
-   `/api/factory_reset`, OTA, and mdns-change **do** reboot; expect ~10–15 s downtime.
+   `/api/factory_reset`, OTA, and mdns-change **do** reboot; expect ~10–15 s downtime, and
+   **every output drops**.
+7. **Restore after reboot (opt-in, `restore 1` / settings `restore:true`).** The setpoint
+   and output mask are saved 2 s after they stop changing. At boot, the saved setpoint is
+   applied first; each saved output is switched on only once its rail checks out (CH1:
+   controller frozen and within 500 mV; CH2 4.5–5.5 V; CH3 3.0–3.6 V), else it stays off
+   and `auto_on_fail` is logged. Off by default: everything stays off after a reboot.
+8. **Wi-Fi in service (3.1.0):** if the link drops, the device retries the saved networks
+   every 15 s and **never** opens its (open) setup AP; that only happens at power-up with no
+   reachable network. `/api/info.wifi_drop` and `reset` explain the last outage/reboot.
 
 ---
 
@@ -255,19 +310,19 @@ or an explicitly allowed host, avoids that.)*
 ## 10. Copy-paste agent prompt
 
 > You are testing a Voltbench ESP32-C3 programmable power supply at `http://<IP>/`
-> (firmware 3.0.1). Read its automation contract before issuing any call: the API is
+> (firmware 3.1.0). Read its automation contract before issuing any call: the API is
 > summarized here — [paste this file or its URL].
 >
 > Rules: (1) `GET /api/info` unauthenticated first to read `require_login`; if true,
 > `POST /api/login {pass:"admin"}` **once** and reuse the returned `token` in an
 > `X-Auth` header for every call — logging in again rotates and invalidates the old
 > token. (2) Only channel 1 is variable; set it with `POST /api/control
-> action=set_voltage output=1 value=<volts>` (clamped 0–16 V). (3) After a set,
+> action=set_voltage output=1 value=<volts>` (2.5–16 V; outside → HTTP 400). (3) After a set,
 > poll `/api/status` until `state=="frozen"`, wait ~1.5 s, then read `voltage1`.
 > (4) Do **not** assert exact voltage — output is quantized to a non-uniform pot ladder
 > (~30 mV/step low, ~0.9 V/step near 15 V); assert within half a local step, or against
 > the nearest rung in `/api/cal/status.mv`. (5) Never trigger `/api/ota/*` or
-> `/api/factory_reset` unless the test is specifically about OTA — OTA can downgrade the
-> device if the GitHub "latest" differs. (6) Async endpoints (`/api/wifi/scan`,
+> `/api/factory_reset` unless the test is specifically about OTA — any reboot drops every
+> output. (6) Async endpoints (`/api/wifi/scan`,
 > `/api/ota/check`) return `202 {…:true}` first — poll until the real payload.
 > Turn output off (`all_off`) when done.
